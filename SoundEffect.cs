@@ -210,13 +210,15 @@ public partial class MainWindow
                 stobj = new SoundEffectTiming(noteGroup.time);
 
             stobj.noteGroupIndex = i;
-
+            bool hasnote = false;
             var notes = noteGroup.getNotes();
             foreach (var note in notes)
                 switch (note.noteType)
                 {
                     case SimaiNoteType.Tap:
                     {
+                            if (note.isMine) break;
+                            hasnote = true;
                         stobj.hasAnswer = true;
                         if (note.isBreak)
                         {
@@ -235,7 +237,9 @@ public partial class MainWindow
                     }
                     case SimaiNoteType.Hold:
                     {
-                        stobj.hasAnswer = true;
+                            if (note.isMine) break;
+                            hasnote = true;
+                            stobj.hasAnswer = true;
                         // 类似于Tap 判断Break和Ex的音效 二者皆无则为普通
                         if (note.isBreak)
                         {
@@ -269,7 +273,7 @@ public partial class MainWindow
                     }
                     case SimaiNoteType.Slide:
                     {
-                        if (!note.isSlideNoHead)
+                            if (!note.isSlideNoHead && !note.isMine)
                         {
                             // 当Slide不是无头星星的时候 才有answer音和判定音
                             stobj.hasAnswer = true;
@@ -327,14 +331,18 @@ public partial class MainWindow
                     }
                     case SimaiNoteType.Touch:
                     {
-                        stobj.hasAnswer = true;
+                            if (note.isMine) break;
+                            hasnote = true;
+                            stobj.hasAnswer = true;
                         stobj.hasTouch = true;
                         if (note.isHanabi) stobj.hasHanabi = true;
                         break;
                     }
                     case SimaiNoteType.TouchHold:
                     {
-                        stobj.hasAnswer = true;
+                            if (note.isMine) break;
+                            hasnote = true;
+                            stobj.hasAnswer = true;
                         stobj.hasTouch = true;
                         stobj.hasTouchHold = true;
                         // 计算TouchHold结尾
@@ -356,7 +364,8 @@ public partial class MainWindow
                         break;
                     }
                 }
-
+            if (hasnote == false) continue;
+            hasnote = false;
             if (combIndex != -1)
                 waitToBePlayed[combIndex] = stobj;
             else

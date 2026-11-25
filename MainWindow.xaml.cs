@@ -11,6 +11,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using DiscordRPC.Logging;
 using MajdataEdit.AutoSaveModule;
+using MajdataEdit.SvBrush;
 using Microsoft.Win32;
 using Un4seen.Bass;
 using MajdataEdit.SyntaxModule;
@@ -356,10 +357,184 @@ public partial class MainWindow : Window
         }
     }
 
-    private void CheckUpdate_Click(object? sender, RoutedEventArgs e)
+    /*private void CheckUpdate_Click(object? sender, RoutedEventArgs e)
     {
         CheckUpdate();
+    }*/
+
+    private void Option1_Click(object? sender, RoutedEventArgs e)
+    {
+        SvBrushFromSelection();
     }
+
+    private void Option2_Click(object? sender, RoutedEventArgs e)
+    {
+        return;
+    }
+
+    private void Option3_Click(object? sender, RoutedEventArgs e)
+    {
+        return;
+    }
+
+    //*SV 曲线刷
+
+    /// <summary>选区两端的文本（去掉 \r，和 SimaiProcess 的下标口径一致）。</summary>
+    private static string TextBetween(TextPointer a, TextPointer b)
+    {
+        return new TextRange(a, b).Text.Replace("\r", "");
+    }
+
+    /// <summary>把位置退到所在格子的开头（上一个逗号之后）。</summary>
+    private static TextPointer MoveToCellStart(TextPointer p)
+    {
+        while (true)
+        {
+            var prev = p.GetNextInsertionPosition(LogicalDirection.Backward);
+            if (prev == null) return p;
+            if (TextBetween(prev, p).Contains(',')) return p;
+            p = prev;
+        }
+    }
+
+    /// <summary>把位置推到下一个逗号之后（含逗号），并吃掉尾部空白。</summary>
+    private static TextPointer MoveToCellEnd(TextPointer p)
+    {
+        // 尾部空白先退掉，避免选区停在一格中间
+        while (true)
+        {
+            var prev = p.GetNextInsertionPosition(LogicalDirection.Backward);
+            if (prev == null) break;
+            var t = TextBetween(prev, p);
+            if (t.Length == 0) break;
+            if (t.Trim().Length != 0) break;
+            p = prev;
+        }
+
+        var before = p.GetNextInsertionPosition(LogicalDirection.Backward);
+        if (before != null && TextBetween(before, p).Contains(',')) return p;
+
+        while (true)
+        {
+            var next = p.GetNextInsertionPosition(LogicalDirection.Forward);
+            if (next == null) return p;
+            var t = TextBetween(p, next);
+            p = next;
+            if (t.Contains(',')) return p;
+        }
+    }
+
+    /// <summary>已打开的曲线刷窗口；同时只允许一个。</summary>
+    private SvBrushWindow? svBrushWindow;
+
+    private void SvBrushFromSelection()
+    {
+        // 独立窗口：没选中也能打开，选中内容后再载入
+        if (svBrushWindow != null)
+        {
+            svBrushWindow.Activate();
+            return;
+        }
+
+        var window = new SvBrushWindow(ReadSvSelectionForBrush, ApplySvBrushText)
+        {
+            Owner = this
+        };
+        window.Closed += (_, _) => svBrushWindow = null;
+        svBrushWindow = window;
+        window.Show();
+    }
+
+    /// <summary>把生成的文本写回编辑器。写入前重新吸附一次选区，防止选区已经被改过。</summary>
+    private void ApplySvBrushText(string text)
+    {
+        var snap = ReadSvSelectionForBrush();
+        var start = snap.Start;
+        var end = snap.End;
+        if (!snap.IsValid || start == null || end == null) return;
+
+        FumenContent.Selection.Select(start, end);
+        FumenContent.Selection.Text = text;
+    }
+
+    /// <summary>读取当前选区（吸附到整格），交给曲线刷窗口。</summary>
+    private SvSelectionSnapshot ReadSvSelectionForBrush()
+    {
+        var snap = new SvSelectionSnapshot();
+        var sel = FumenContent.Selection;
+
+        if (sel.Start.CompareTo(sel.End) == 0)
+        {
+            snap.Message = "未选中内容。请回到编辑器里选中一段谱面（至少一整格），这里会自动载入。";
+            return snap;
+        }
+
+        // 吸附到整格：起点退到上一个逗号后，终点推到下一个逗号后
+        var start = MoveToCellStart(sel.Start);
+        var end = MoveToCellEnd(sel.End);
+        if (start.CompareTo(end) >= 0)
+        {
+            snap.Message = "选区里没有完整的格子，请重新选择。";
+            return snap;
+        }
+
+        var selectionText = new TextRange(start, end).Text;
+        if (string.IsNullOrEmpty(selectionText))
+        {
+            snap.Message = "选区里没有内容。";
+            return snap;
+        }
+
+        // 含 GR 组的选区交给组内自己处理，这里先拒绝，避免破坏组结构
+        if (selectionText.Contains("<GR", StringComparison.Ordinal) ||
+            selectionText.Contains("</GR", StringComparison.Ordinal))
+        {
+            snap.Message = "选区里包含 GR 组，暂不支持。请把选区避开组，或先手动处理组内部分。";
+            return snap;
+        }
+
+        snap.Start = start;
+        snap.End = end;
+        snap.Text = selectionText;
+        snap.StartOffset = new TextRange(FumenContent.Document.ContentStart, start).Text.Replace("\r", "").Length;
+        snap.EndOffset = new TextRange(FumenContent.Document.ContentStart, end).Text.Replace("\r", "").Length;
+
+        // 选区时长 + 每格起始时刻：都用解析出来的逗号表算，不从音符推。
+        // 每格时刻是 Still 的必需输入（选区内 BPM / 拍长可能变过，不能拿平均格长凑）。
+        try
+        {
+            SimaiProcess.Serialize(GetRawFumenText(), snap.StartOffset);
+            snap.Seconds = SimaiProcess.TimeAtPosition(snap.EndOffset) - SimaiProcess.TimeAtPosition(snap.StartOffset);
+
+            var starts = SvCellText.SplitCellStarts(selectionText);
+            var times = new double[starts.Count];
+            for (var k = 0; k < starts.Count; k++)
+            {
+                var plain = snap.StartOffset + CountPlainChars(selectionText, starts[k]);
+                times[k] = SimaiProcess.TimeAtPosition(plain);
+            }
+
+            snap.CellTimes = times;
+        }
+        catch
+        {
+            snap.Seconds = 0;
+            snap.CellTimes = Array.Empty<double>();
+        }
+
+        return snap;
+    }
+
+    /// <summary>从字符串开头数到 upTo 位置有多少个字符（不计 \r，和 SimaiProcess 的下标口径一致）。</summary>
+    private static int CountPlainChars(string s, int upTo)
+    {
+        var n = 0;
+        for (var i = 0; i < upTo && i < s.Length; i++)
+            if (s[i] != '\r')
+                n++;
+        return n;
+    }
+
 
     private void Menu_AutosaveRecover_Click(object? sender, RoutedEventArgs e)
     {
@@ -546,22 +721,35 @@ public partial class MainWindow : Window
 
     private void FumenContent_SelectionChanged(object sender, RoutedEventArgs e)
     {
+        // 曲线刷窗口开着的话，让它跟着选区刷新（窗口内部自己防抖）
+        svBrushWindow?.NotifyEditorSelectionChanged();
+
         NoteNowText.Content = "" + (
             new TextRange(FumenContent.Document.ContentStart, FumenContent.CaretPosition).Text.Replace("\r", "")
                 .Count(o => o == '\n') + 1) + " 行";
         if (Bass.BASS_ChannelIsActive(bgmStream) == BASSActive.BASS_ACTIVE_PLAYING && (bool)FollowPlayCheck.IsChecked!)
             return;
-        //TODO:这个应该换成用fumen text position来在已经serialized的timinglist里面找。。 然后直接去掉这个double的返回和position的入参。。。
-        var time = SimaiProcess.Serialize(GetRawFumenText(), GetRawFumenPosition());
-
         //按住Ctrl，同时按下鼠标左键/上下左右方向键时，才改变进度，其他包含Ctrl的组合键不影响进度。
-        if (Keyboard.Modifiers == ModifierKeys.Control && (
-                Mouse.LeftButton == MouseButtonState.Pressed ||
-                Keyboard.IsKeyDown(Key.Left) ||
-                Keyboard.IsKeyDown(Key.Right) ||
-                Keyboard.IsKeyDown(Key.Up) ||
-                Keyboard.IsKeyDown(Key.Down)
-            ))
+        var needSeek = Keyboard.Modifiers == ModifierKeys.Control && (
+            Mouse.LeftButton == MouseButtonState.Pressed ||
+            Keyboard.IsKeyDown(Key.Left) ||
+            Keyboard.IsKeyDown(Key.Right) ||
+            Keyboard.IsKeyDown(Key.Up) ||
+            Keyboard.IsKeyDown(Key.Down));
+
+        // 这个事件在光标每一次移动（包括每敲一个字）都会触发。以前每次都整张谱面重解析，
+        // 十几万字符的谱面要 25ms 左右，连按方向键就会明显卡。
+        //   - 文本没变 → 走解析缓存 + 逗号表二分（微秒级）
+        //   - 文本刚改过 → 等 chartChangeTimer 的延迟解析，这里先沿用上次的时间
+        //   - 真的需要精确 seek（Ctrl + 拖动/方向键）→ 照旧完整解析
+        var rawText = GetRawFumenText();
+        double time;
+        if (needSeek || SimaiProcess.HasFreshParse(rawText))
+            time = SimaiProcess.Serialize(rawText, GetRawFumenPosition());
+        else
+            time = ghostCusorPositionTime;
+
+        if (needSeek)
         {
             if (Bass.BASS_ChannelIsActive(bgmStream) == BASSActive.BASS_ACTIVE_PLAYING)
                 TogglePause();

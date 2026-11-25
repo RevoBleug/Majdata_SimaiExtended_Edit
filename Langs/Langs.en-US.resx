@@ -478,4 +478,10 @@ Click OK to start render.</value>
   <data name="SyntaxWarning" xml:space="preserve">
     <value>[Warning] The chart should end with "E" : "{0}"({1}L,{2}C)</value>
   </data>
+  <data name="Seoption" xml:space="preserve">
+    <value>SE Option</value>
+  </data>
+  <data name="UseMineEffect" xml:space="preserve">
+    <value>Use Mine Sound Effect</value>
+  </data>
 </root>

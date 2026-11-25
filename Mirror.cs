@@ -110,98 +110,91 @@ internal static class Mirror
         { '>', '<' }
     };
 
-    private static readonly string HS_SEQUENCE = "<HS*";
-
     public static string NoteMirrorHandle(string str, HandleType type)
     {
         // NOTE: 类似 1-5[8:1]{16}, 这样的字符串 可以被SimaiProcess处理 但无法被正确镜像
         // 我认为这是对的 因为这种语法本身就是错误的 只不过SimaiProcess没有做处理而已 不能因此而妥协 以上
 
-        StringBuilder resultString = new StringBuilder();   // 最终的结果
-        StringBuilder curPart = new StringBuilder();        // 当前的一部分
-        bool isPartIgnored = false;     // 当前部分是否需要被忽略
-        int hsStatus = 0;              // 当前部分是否是HS语法的一部分 0-未检测到 1-检测到< 2-检测到H 3-检测到S 4-检测到*  必须按照01234的顺序走完才算HS 否则不算
-        
-        // 空白字符会被正常加入每一个part 因此应当在子方法中进行忽略处理 这是为了保持空白字符位置不变
-        foreach (char c in str)
+        var resultString = new StringBuilder(); // 最终的结果
+        var curPart = new StringBuilder(); // 当前的一部分
+        var isPartIgnored = false; // 当前部分是否需要被忽略（{} () <> 之类的指令块）
+        var inTag = false; // 是否正在读尖括号指令
+
+        void FlushPart()
         {
+            if (curPart.Length == 0)
+            {
+                isPartIgnored = false;
+                return;
+            }
+
+            var part = curPart.ToString();
+            resultString.Append(isPartIgnored ? part : NoteMirrorPart(part, type));
+            curPart.Clear();
+            isPartIgnored = false;
+        }
+
+        // 空白字符会被正常加入每一个part 因此应当在子方法中进行忽略处理 这是为了保持空白字符位置不变
+        for (var index = 0; index < str.Length; index++)
+        {
+            var c = str[index];
+
+            if (inTag)
+            {
+                curPart.Append(c);
+                if (c == '>')
+                {
+                    inTag = false;
+                    FlushPart();
+                }
+
+                continue;
+            }
+
+            // 尖括号指令（<HS*> <SV*> <SC*> <GR*> </GR>）必须原样保留、绝不参与镜像：
+            // 否则里面的数字会被当成键位换掉（<SV*0.8> 镜像成 <SV*0.7>，<SC*2> 变成 <SC*7>）。
+            // 注意 '<' 本身也是滑条键位（1<3 这种），只有后面紧跟已知指令头时才当指令。
+            if (c == '<' && IsDirectiveAt(str, index))
+            {
+                FlushPart();
+                isPartIgnored = true;
+                inTag = true;
+                curPart.Append(c);
+                continue;
+            }
+
             curPart.Append(c);
 
             // 如果存在以下字符 则本部分一定是被忽略的
-            if (!isPartIgnored && (c == '{' || c == '}' || c == '(' || c == ')'))
-            {
+            if (c == '{' || c == '}' || c == '(' || c == ')')
                 isPartIgnored = true;
-            }
-
-            if (hsStatus == 0)
-            {
-                if (HS_SEQUENCE[0] == c)
-                {
-                    // 检查到了疑似HS语法的开头 开始检查接下来的字符
-                    hsStatus = 1;
-                }
-            }
-            else if (hsStatus != HS_SEQUENCE.Length)
-            {
-                // 如果hsStatus不是0 说明已经开始检查了 那么接下来就必须严格紧凑地检查到剩余的HS语法字符
-                // 当然 空白字符不算
-                if (!Char.IsWhiteSpace(c))
-                {
-                    if (HS_SEQUENCE[hsStatus] == c)
-                    {
-                        // 符合 则步进
-                        hsStatus++;
-                        if (hsStatus == HS_SEQUENCE.Length)
-                        {
-                            // 检查到结尾了 则肯定是一个hs结构了
-                            isPartIgnored = true;
-                        }
-                    }
-                    else
-                    {
-                        // 不符合 说明这不是一个HS结构 则归零重新开始探索
-                        hsStatus = 0;
-                    }
-                }
-            }
 
             // 以下字符表示本part结束
-            if (c == '}' || c == ')' || c == ',' || c == '/' || c == '`' ||
-                (hsStatus == 4 && c == '>'))
-            {
-                if (isPartIgnored)
-                {
-                    // 需要忽略的段落 直接原样加进去就行了
-                    resultString.Append(curPart.ToString());
-                }
-                else
-                {
-                    // 需要镜像计算的段落 调用子方法进行转换
-                    resultString.Append(NoteMirrorPart(curPart.ToString(), type));
-                }
-
-                isPartIgnored = false;
-                hsStatus = 0;
-                curPart.Clear();
-            }
+            if (c == '}' || c == ')' || c == ',' || c == '/' || c == '`')
+                FlushPart();
         }
 
         // 处理完以后可能还会有剩余的没做转换（可能结尾的逗号没选进去） 也要处理一下
-        if (curPart.Length > 0)
-        {
-            if (isPartIgnored)
-            {
-                // 需要忽略的段落 直接原样加进去就行了
-                resultString.Append(curPart.ToString());
-            }
-            else
-            {
-                // 需要镜像计算的段落 调用子方法进行转换
-                resultString.Append(NoteMirrorPart(curPart.ToString(), type));
-            }
-        }
+        FlushPart();
 
         return resultString.ToString();
+    }
+
+
+    /// <summary>
+    ///     判断 index 处的 '<' 是否是一条指令的开头（HS* / SV* / SC* / GR* / GR: / /GR）。
+    ///     '<' 同时是滑条键位符号，所以不能只看字符本身。
+    /// </summary>
+    private static bool IsDirectiveAt(string str, int index)
+    {
+        if (index < 0 || index + 1 >= str.Length || str[index] != '<') return false;
+
+        if (str[index + 1] == '/')
+            return index + 4 < str.Length && string.CompareOrdinal(str, index + 2, "GR>", 0, 3) == 0;
+
+        if (index + 3 >= str.Length) return false;
+        var head = str.Substring(index + 1, 3);
+        return head == "HS*" || head == "SV*" || head == "SC*" || head == "GR*" || head == "GR:";
     }
 
     private static string NoteMirrorPart(string str, HandleType type)

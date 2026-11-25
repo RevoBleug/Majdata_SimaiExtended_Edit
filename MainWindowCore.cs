@@ -298,9 +298,10 @@ public partial class MainWindow : Window
             editorSetting!.Default_Break_Slide_Level);
         Bass.BASS_ChannelSetAttribute(judgeExStream, BASSAttribute.BASS_ATTRIB_VOL, editorSetting!.Default_Ex_Level);
         Bass.BASS_ChannelSetAttribute(touchStream, BASSAttribute.BASS_ATTRIB_VOL, editorSetting!.Default_Touch_Level);
-        Bass.BASS_ChannelSetAttribute(hanabiStream, BASSAttribute.BASS_ATTRIB_VOL, editorSetting!.Default_Hanabi_Level);
+        Bass.BASS_ChannelSetAttribute(hanabiStream, BASSAttribute.BASS_ATTRIB_VOL, editorSetting!.Default_Hanabi_Level); 
         Bass.BASS_ChannelSetAttribute(holdRiserStream, BASSAttribute.BASS_ATTRIB_VOL,
             editorSetting!.Default_Hanabi_Level);
+        SetMineVolume(editorSetting!.Default_Mine_Answer_Level, editorSetting!.Default_Mine_Judge_Level);
         var info = Bass.BASS_ChannelGetInfo(bgmStream);
         if (info.freq != 44100) MessageBox.Show(GetLocalizedString("Warn44100Hz"), GetLocalizedString("Attention"));
         ReadWaveFromFile();
@@ -467,6 +468,8 @@ public partial class MainWindow : Window
         Bass.BASS_ChannelGetAttribute(touchStream, BASSAttribute.BASS_ATTRIB_VOL, ref setting.Touch_Level);
         Bass.BASS_ChannelGetAttribute(slideStream, BASSAttribute.BASS_ATTRIB_VOL, ref setting.Slide_Level);
         Bass.BASS_ChannelGetAttribute(hanabiStream, BASSAttribute.BASS_ATTRIB_VOL, ref setting.Hanabi_Level);
+        setting.Mine_Answer_Level = GetMineAnswerVolume();
+        setting.Mine_Judge_Level = GetMineJudgeVolume();
         var json = JsonConvert.SerializeObject(setting);
         File.WriteAllText(maidataDir + "/" + majSettingFilename, json);
     }
@@ -496,6 +499,7 @@ public partial class MainWindow : Window
         Bass.BASS_ChannelSetAttribute(touchStream, BASSAttribute.BASS_ATTRIB_VOL, setting.Touch_Level);
         Bass.BASS_ChannelSetAttribute(hanabiStream, BASSAttribute.BASS_ATTRIB_VOL, setting.Hanabi_Level);
         Bass.BASS_ChannelSetAttribute(holdRiserStream, BASSAttribute.BASS_ATTRIB_VOL, setting.Hanabi_Level);
+        SetMineVolume(setting.Mine_Answer_Level, setting.Mine_Judge_Level);
 
         SaveSetting(); // 覆盖旧版本setting
     }
@@ -534,6 +538,12 @@ public partial class MainWindow : Window
         if (!File.Exists(editorSettingFilename)) CreateEditorSetting();
         var json = File.ReadAllText(editorSettingFilename);
         editorSetting = JsonConvert.DeserializeObject<EditorSetting>(json)!;
+
+        // 旧版本的默认刷新延迟是 1000ms —— 打完字要等一整秒预览才动，手感很差。
+        // 现在默认改成 120ms（解析有缓存、波形只画可见窗口，这个间隔完全付得起）。
+        // 但设置项写在文件里，光改默认值对老用户不生效，所以这里把那个"从没被改过的 1000"迁移一次。
+        if (editorSetting.ChartRefreshDelay == 1000) editorSetting.ChartRefreshDelay = 120;
+        editorSetting.ChartRefreshDelay = Math.Clamp(editorSetting.ChartRefreshDelay, 0, 5000);
 
         if (RenderOptions.ProcessRenderMode != RenderMode.SoftwareOnly)
             //如果没有通过命令行预先指定渲染模式，则使用设置项的渲染模式
@@ -659,10 +669,112 @@ public partial class MainWindow : Window
         MusicWave.Source = WaveBitmap;
     }
 
+    private readonly List<double> beatStrongTimes = new();
+    private readonly List<double> beatWeakTimes = new();
+    private int beatCacheVersion = -1;
+    private double beatCacheSongLength = double.NaN;
+    private int lastWaveDrawTick;
+
+    /// <summary>
+    ///     小节线/拍线的分段只跟谱面内容有关，解析完算一次就够。
+    ///     DrawWave 是被 1ms 定时器反复调用的，上万时间点的谱面每帧重算会把 UI 线程吃满。
+    /// </summary>
+    private void EnsureBeatCache()
+    {
+        var songLen = Bass.BASS_ChannelBytes2Seconds(bgmStream, Bass.BASS_ChannelGetLength(bgmStream));
+        if (beatCacheVersion == SimaiProcess.ParseVersion && Math.Abs(beatCacheSongLength - songLen) < 1e-6) return;
+
+        beatCacheVersion = SimaiProcess.ParseVersion;
+        beatCacheSongLength = songLen;
+
+        var lastbpm = -1f;
+        var lastSigNum = -1;
+        var lastSigDen = -1;
+        var bpmChangeTimes = new List<double>(); //在什么时间变成什么值
+        var bpmChangeValues = new List<float>();
+        var signatureNumerators = new List<int>(); //每段对应的拍号分子
+        var signatureDenominators = new List<int>(); //每段对应的拍号分母
+
+        foreach (var timing in SimaiProcess.timinglist)
+        {
+            // 组内的 bpm / 拍号只影响组内音符的排布，不参与主谱面的小节线
+            if (timing.groupIndex != 0) continue;
+
+            // bpm 或拍号任意一个变化都要开新的一段
+            if (timing.currentBpm != lastbpm || timing.signatureNumerator != lastSigNum ||
+                timing.signatureDenominator != lastSigDen)
+            {
+                bpmChangeTimes.Add(timing.time);
+                bpmChangeValues.Add(timing.currentBpm);
+                signatureNumerators.Add(timing.signatureNumerator);
+                signatureDenominators.Add(timing.signatureDenominator);
+                lastbpm = timing.currentBpm;
+                lastSigNum = timing.signatureNumerator;
+                lastSigDen = timing.signatureDenominator;
+            }
+        }
+
+        bpmChangeTimes.Add(songLen);
+
+        beatStrongTimes.Clear();
+        beatWeakTimes.Clear();
+
+        double time = SimaiProcess.first;
+        var currentBeat = 1;
+        for (var i = 1; i < bpmChangeTimes.Count; i++)
+        {
+            var segIndex = i - 1;
+            var sigN = segIndex < signatureNumerators.Count ? signatureNumerators[segIndex] : 4;
+            var sigD = segIndex < signatureDenominators.Count ? signatureDenominators[segIndex] : 4;
+            if (sigN <= 0) sigN = 4;
+            if (sigD <= 0) sigD = 4;
+            var segBpm = segIndex < bpmChangeValues.Count ? bpmChangeValues[segIndex] : 120f;
+
+            while (time - bpmChangeTimes[i] < -0.05) //在那个时间之前都是之前的bpm
+            {
+                if (currentBeat > sigN) currentBeat = 1;
+                // 一拍 = 分母对应的音符：4/4 是四分音符，7/8 是八分音符
+                var timePerBeat = 1d / (segBpm / 60d) * 4d / sigD;
+                if (currentBeat == 1)
+                    beatStrongTimes.Add(time);
+                else
+                    beatWeakTimes.Add(time);
+                currentBeat++;
+                time += timePerBeat;
+            }
+
+            time = bpmChangeTimes[i];
+            currentBeat = 1;
+        }
+    }
+
+    /// <summary>在按时间升序的列表里找第一个 time &gt;= target 的下标</summary>
+    private static int LowerBoundByTime(List<SimaiTimingPoint> list, double target)
+    {
+        var lo = 0;
+        var hi = list.Count;
+        while (lo < hi)
+        {
+            var mid = (lo + hi) >> 1;
+            if (list[mid].time < target) lo = mid + 1;
+            else hi = mid;
+        }
+
+        return lo;
+    }
+
     private void DrawWave()
     {
         if (isDrawing) return;
         if (WaveBitmap == null) return;
+
+        // 播放时画波形是被 1ms 定时器反复调的，波形本身 60fps 就够，先节流
+        if (isPlaying)
+        {
+            var nowTick = Environment.TickCount;
+            if (nowTick - lastWaveDrawTick < 10) return;
+            lastWaveDrawTick = nowTick;
+        }
 
         Dispatcher.Invoke(() =>
         {
@@ -711,54 +823,20 @@ public partial class MainWindow : Window
             graphics.DrawLines(pen, points.ToArray());
 
             //Draw Bpm lines
-            var lastbpm = -1f;
-            var bpmChangeTimes = new List<double>(); //在什么时间变成什么值
-            var bpmChangeValues = new List<float>();
-            bpmChangeTimes.Clear();
-            bpmChangeValues.Clear();
-            foreach (var timing in SimaiProcess.timinglist)
-                if (timing.currentBpm != lastbpm)
-                {
-                    bpmChangeTimes.Add(timing.time);
-                    bpmChangeValues.Add(timing.currentBpm);
-                    lastbpm = timing.currentBpm;
-                }
-
-            bpmChangeTimes.Add(Bass.BASS_ChannelBytes2Seconds(bgmStream, Bass.BASS_ChannelGetLength(bgmStream)));
-
-            double time = SimaiProcess.first;
-            var signature = 4; //预留拍号
-            var currentBeat = 1;
-            var timePerBeat = 0d;
+            // 这些分段和拍线只跟谱面内容有关、跟播放位置无关。
+            // 原来每次重绘都要在全部时间点（大谱面能到 1.5 万个）上重算一遍 + 重建四个 List，
+            // 而 DrawWave 是被 1ms 定时器反复调用的，这里改成解析后只算一次。
+            EnsureBeatCache();
             pen = new Pen(Color.Yellow, 1);
-            var strongBeat = new List<double>();
-            var weakBeat = new List<double>();
-            for (var i = 1; i < bpmChangeTimes.Count; i++)
-            {
-                while (time - bpmChangeTimes[i] < -0.05) //在那个时间之前都是之前的bpm
-                {
-                    if (currentBeat > signature) currentBeat = 1;
-                    timePerBeat = 1d / (bpmChangeValues[i - 1] / 60d);
-                    if (currentBeat == 1)
-                        strongBeat.Add(time);
-                    else
-                        weakBeat.Add(time);
-                    currentBeat++;
-                    time += timePerBeat;
-                }
 
-                time = bpmChangeTimes[i];
-                currentBeat = 1;
-            }
-
-            foreach (var btime in strongBeat)
+            foreach (var btime in beatStrongTimes)
             {
                 if (btime - currentTime > deltatime) continue;
                 var x = ((float)(btime / step) - startindex) * linewidth;
                 graphics.DrawLine(pen, x, 0, x, 75);
             }
 
-            foreach (var btime in weakBeat)
+            foreach (var btime in beatWeakTimes)
             {
                 if (btime - currentTime > deltatime) continue;
                 var x = ((float)(btime / step) - startindex) * linewidth;
@@ -766,20 +844,27 @@ public partial class MainWindow : Window
             }
 
             //Draw timing lines
+            // 只遍历可见时间窗：时间点可能上万个，全表扫一遍等于每帧做几万次无用判断
             pen = new Pen(Color.White, 1);
-            foreach (var note in SimaiProcess.timinglist)
+            var timingPoints = SimaiProcess.timinglist;
+            for (var ti = LowerBoundByTime(timingPoints, currentTime - deltatime); ti < timingPoints.Count; ti++)
             {
+                var note = timingPoints[ti];
                 if (note == null) break;
-                if (note.time - currentTime > deltatime) continue;
+                if (note.time > currentTime + deltatime) break;
                 var x = ((float)(note.time / step) - startindex) * linewidth;
                 graphics.DrawLine(pen, x, 60, x, 75);
             }
 
-            //Draw notes                    
-            foreach (var note in SimaiProcess.notelist)
+            //Draw notes
+            var notePoints = SimaiProcess.notelist;
+            for (var ni = LowerBoundByTime(notePoints, currentTime - deltatime); ni < notePoints.Count; ni++)
             {
+                var note = notePoints[ni];
                 if (note == null) break;
-                if (note.time - currentTime > deltatime) continue;
+                if (note.time > currentTime + deltatime) break;
+                // 只带 SV/SC、没有音符的时间点：跳过，否则 getNotes() 每次都新建一个空 List
+                if (string.IsNullOrEmpty(note.notesContent)) continue;
                 var notes = note.getNotes();
                 var isEach = notes.Count(o => !o.isSlideNoHead && !o.isMine) > 1;
 

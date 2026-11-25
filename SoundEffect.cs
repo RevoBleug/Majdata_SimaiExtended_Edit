@@ -37,6 +37,97 @@ public partial class MainWindow
     public int trackStartStream = -114514;
 
     private List<SoundEffectTiming>? waitToBePlayed;
+
+    // 地雷音符的音效通道：与普通通道读同一个 wav，但分属不同 BASS channel，
+    // 这样地雷的总音量可以独立于各类音符调节。
+    private readonly Dictionary<SoundDataType, int> mineSFXChannels = new();
+
+    private static readonly Dictionary<SoundDataType, string> MINE_SFX_FILES = new()
+    {
+        { SoundDataType.Answer, "answer.wav" },
+        { SoundDataType.Judge, "judge.wav" },
+        { SoundDataType.JudgeBreak, "judge_break.wav" },
+        { SoundDataType.JudgeEX, "judge_ex.wav" },
+        { SoundDataType.Break, "break.wav" },
+        { SoundDataType.Hanabi, "hanabi.wav" },
+        { SoundDataType.TouchHold, "touchHold_riser.wav" },
+        { SoundDataType.Slide, "slide.wav" },
+        { SoundDataType.Touch, "touch.wav" },
+        { SoundDataType.BreakSlideStart, "break_slide_start.wav" },
+        { SoundDataType.BreakSlide, "break_slide.wav" },
+        { SoundDataType.JudgeBreakSlide, "judge_break_slide.wav" }
+    };
+
+    /// <summary>
+    ///     取音效对应的 BASS 通道。地雷音符优先走地雷通道，通道缺失时退回普通通道。
+    /// </summary>
+    private int GetSFXChannel(SoundDataType type, bool isMine)
+    {
+        if (isMine && mineSFXChannels.TryGetValue(type, out var mineChannel) && mineChannel != -114514)
+            return mineChannel;
+
+        return type switch
+        {
+            SoundDataType.Answer => answerStream,
+            SoundDataType.Judge => judgeStream,
+            SoundDataType.JudgeBreak => judgeBreakStream,
+            SoundDataType.JudgeEX => judgeExStream,
+            SoundDataType.Break => breakStream,
+            SoundDataType.Hanabi => hanabiStream,
+            SoundDataType.TouchHold => holdRiserStream,
+            SoundDataType.Slide => slideStream,
+            SoundDataType.Touch => touchStream,
+            SoundDataType.AllPerfect => allperfectStream,
+            SoundDataType.FullComboFanfare => fanfareStream,
+            SoundDataType.Clock => clockStream,
+            SoundDataType.BreakSlideStart => breakSlideStartStream,
+            SoundDataType.BreakSlide => breakSlideStream,
+            SoundDataType.JudgeBreakSlide => judgeBreakSlideStream,
+            _ => -114514
+        };
+    }
+
+    /// <summary>
+    ///     统一设置地雷音效的音量：正解音一组，其余（判定/击打/滑条启动/触屏等）一组
+    /// </summary>
+    public void SetMineVolume(float answerVolume, float judgeVolume)
+    {
+        foreach (var pair in mineSFXChannels)
+            if (pair.Value != -114514)
+                Bass.BASS_ChannelSetAttribute(pair.Value, BASSAttribute.BASS_ATTRIB_VOL,
+                    pair.Key == SoundDataType.Answer ? answerVolume : judgeVolume);
+    }
+
+    /// <summary>
+    ///     音量面板用的地雷代表通道（同组通道音量一致，取一个即可）
+    /// </summary>
+    public int GetMineAnswerChannel()
+    {
+        return GetSFXChannel(SoundDataType.Answer, true);
+    }
+
+    public int GetMineJudgeChannel()
+    {
+        return GetSFXChannel(SoundDataType.Judge, true);
+    }
+
+    private static float GetChannelVolume(int channel)
+    {
+        if (channel == -114514) return 1f;
+        var volume = 0f;
+        Bass.BASS_ChannelGetAttribute(channel, BASSAttribute.BASS_ATTRIB_VOL, ref volume);
+        return volume;
+    }
+
+    public float GetMineAnswerVolume()
+    {
+        return GetChannelVolume(GetMineAnswerChannel());
+    }
+
+    public float GetMineJudgeVolume()
+    {
+        return GetChannelVolume(GetMineJudgeChannel());
+    }
     //private Stopwatch sw = new Stopwatch();
 
     // This update "middle" frequently to monitor if the wave has to be stopped
@@ -66,6 +157,11 @@ public partial class MainWindow
         breakSlideStream = Bass.BASS_StreamCreateFile(path + "break_slide.wav", 0L, 0L, BASSFlag.BASS_SAMPLE_FLOAT);
         judgeBreakSlideStream =
             Bass.BASS_StreamCreateFile(path + "judge_break_slide.wav", 0L, 0L, BASSFlag.BASS_SAMPLE_FLOAT);
+
+        // 地雷用同一批 wav 再开一套通道，音量独立
+        foreach (var pair in MINE_SFX_FILES)
+            mineSFXChannels[pair.Key] =
+                Bass.BASS_StreamCreateFile(path + pair.Value, 0L, 0L, BASSFlag.BASS_SAMPLE_FLOAT);
     }
 
     [DllImport("winmm")]
@@ -113,20 +209,27 @@ public partial class MainWindow
                 var se = waitToBePlayed[0];
                 waitToBePlayed.RemoveAt(0);
 
-                if (se.hasAnswer) Bass.BASS_ChannelPlay(answerStream, true);
-                if (se.hasJudge) Bass.BASS_ChannelPlay(judgeStream, true);
-                if (se.hasJudgeBreak) Bass.BASS_ChannelPlay(judgeBreakStream, true);
-                if (se.hasJudgeEx) Bass.BASS_ChannelPlay(judgeExStream, true);
-                if (se.hasBreak) Bass.BASS_ChannelPlay(breakStream, true);
-                if (se.hasTouch) Bass.BASS_ChannelPlay(touchStream, true);
+                if (se.hasAnswer) Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.Answer, se.isMine), true);
+                if (se.hasJudge) Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.Judge, se.isMine), true);
+                if (se.hasJudgeBreak)
+                    Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.JudgeBreak, se.isMine), true);
+                if (se.hasJudgeEx)
+                    Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.JudgeEX, se.isMine), true);
+                if (se.hasBreak) Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.Break, se.isMine), true);
+                if (se.hasTouch) Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.Touch, se.isMine), true);
                 if (se.hasHanabi) //may cause delay
-                    Bass.BASS_ChannelPlay(hanabiStream, true);
-                if (se.hasTouchHold) Bass.BASS_ChannelPlay(holdRiserStream, true);
-                if (se.hasTouchHoldEnd) Bass.BASS_ChannelStop(holdRiserStream);
-                if (se.hasSlide) Bass.BASS_ChannelPlay(slideStream, true);
-                if (se.hasBreakSlideStart) Bass.BASS_ChannelPlay(breakSlideStartStream, true);
-                if (se.hasBreakSlide) Bass.BASS_ChannelPlay(breakSlideStream, true);
-                if (se.hasJudgeBreakSlide) Bass.BASS_ChannelPlay(judgeBreakSlideStream, true);
+                    Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.Hanabi, se.isMine), true);
+                if (se.hasTouchHold)
+                    Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.TouchHold, se.isMine), true);
+                if (se.hasTouchHoldEnd)
+                    Bass.BASS_ChannelStop(GetSFXChannel(SoundDataType.TouchHold, se.isMine));
+                if (se.hasSlide) Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.Slide, se.isMine), true);
+                if (se.hasBreakSlideStart)
+                    Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.BreakSlideStart, se.isMine), true);
+                if (se.hasBreakSlide)
+                    Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.BreakSlide, se.isMine), true);
+                if (se.hasJudgeBreakSlide)
+                    Bass.BASS_ChannelPlay(GetSFXChannel(SoundDataType.JudgeBreakSlide, se.isMine), true);
                 if (se.hasAllPerfect)
                 {
                     Bass.BASS_ChannelPlay(allperfectStream, true);
@@ -201,9 +304,11 @@ public partial class MainWindow
             if (noteGroup.time < startTime) continue;
 
             SoundEffectTiming stobj;
+            SoundEffectTiming? mineStobj = null;
+            var hasMineNote = false;
 
             // 如果目前为止已经有一个SE了 那么就直接使用这个SE
-            var combIndex = waitToBePlayed.FindIndex(o => Math.Abs(o.time - noteGroup.time) < 0.001f);
+            var combIndex = waitToBePlayed.FindIndex(o => !o.isMine && Math.Abs(o.time - noteGroup.time) < 0.001f);
             if (combIndex != -1)
                 stobj = waitToBePlayed[combIndex];
             else
@@ -213,49 +318,67 @@ public partial class MainWindow
             bool hasnote = false;
             var notes = noteGroup.getNotes();
             foreach (var note in notes)
+            {
+                // 地雷音符的音效单独成一条 SE（同一时刻），走地雷通道，音量由地雷滑块统一控制
+                var target = stobj;
+                if (note.isMine || note.isSlideMine)
+                {
+                    if (mineStobj == null)
+                    {
+                        var mineIndex = waitToBePlayed.FindIndex(o =>
+                            o.isMine && Math.Abs(o.time - noteGroup.time) < 0.001f);
+                        mineStobj = mineIndex != -1
+                            ? waitToBePlayed[mineIndex]
+                            : new SoundEffectTiming(noteGroup.time, _isMine: true);
+                        mineStobj.noteGroupIndex = i;
+                    }
+
+                    target = mineStobj!;
+                    hasMineNote = true;
+                }
+
                 switch (note.noteType)
                 {
                     case SimaiNoteType.Tap:
                     {
-                            if (note.isMine) break;
-                            hasnote = true;
-                        stobj.hasAnswer = true;
+                        hasnote |= !target.isMine;
+                        target.hasAnswer = true;
                         if (note.isBreak)
                         {
                             // 如果是Break 则有Break判定音和Break欢呼音（2600）
-                            stobj.hasBreak = true;
-                            stobj.hasJudgeBreak = true;
+                            target.hasBreak = true;
+                            target.hasJudgeBreak = true;
                         }
 
                         if (note.isEx)
                             // 如果是Ex 则有Ex判定音
-                            stobj.hasJudgeEx = true;
+                            target.hasJudgeEx = true;
                         if (!note.isBreak && !note.isEx)
                             // 如果二者皆没有 则是普通note 播放普通判定音
-                            stobj.hasJudge = true;
+                            target.hasJudge = true;
                         break;
                     }
                     case SimaiNoteType.Hold:
                     {
-                            if (note.isMine) break;
-                            hasnote = true;
-                            stobj.hasAnswer = true;
+                        hasnote |= !target.isMine;
+                        target.hasAnswer = true;
                         // 类似于Tap 判断Break和Ex的音效 二者皆无则为普通
                         if (note.isBreak)
                         {
-                            stobj.hasBreak = true;
-                            stobj.hasJudgeBreak = true;
+                            target.hasBreak = true;
+                            target.hasJudgeBreak = true;
                         }
 
-                        if (note.isEx) stobj.hasJudgeEx = true;
-                        if (!note.isBreak && !note.isEx) stobj.hasJudge = true;
+                        if (note.isEx) target.hasJudgeEx = true;
+                        if (!note.isBreak && !note.isEx) target.hasJudge = true;
 
                         // 计算Hold尾部的音效
                         if (!(note.holdTime <= 0.00f))
                         {
                             // 如果是短hold（六角tap），则忽略尾部音效。否则，才会计算尾部音效
                             var targetTime = noteGroup.time + note.holdTime;
-                            var nearIndex = waitToBePlayed.FindIndex(o => Math.Abs(o.time - targetTime) < 0.001f);
+                            var nearIndex = waitToBePlayed.FindIndex(o =>
+                                o.isMine == target.isMine && Math.Abs(o.time - targetTime) < 0.001f);
                             if (nearIndex != -1)
                             {
                                 waitToBePlayed[nearIndex].hasAnswer = true;
@@ -264,7 +387,8 @@ public partial class MainWindow
                             else
                             {
                                 // 只有最普通的Hold才有结尾的判定音 Break和Ex型则没有（Break没有为推定）
-                                var holdRelease = new SoundEffectTiming(targetTime, true, !note.isBreak && !note.isEx);
+                                var holdRelease = new SoundEffectTiming(targetTime, true, !note.isBreak && !note.isEx,
+                                    _isMine: target.isMine);
                                 waitToBePlayed.Add(holdRelease);
                             }
                         }
@@ -273,23 +397,25 @@ public partial class MainWindow
                     }
                     case SimaiNoteType.Slide:
                     {
-                            if (!note.isSlideNoHead && !note.isMine)
+                        if (!note.isSlideNoHead)
                         {
+                            hasnote |= !target.isMine;
                             // 当Slide不是无头星星的时候 才有answer音和判定音
-                            stobj.hasAnswer = true;
+                            target.hasAnswer = true;
                             if (note.isBreak)
                             {
-                                stobj.hasBreak = true;
-                                stobj.hasJudgeBreak = true;
+                                target.hasBreak = true;
+                                target.hasJudgeBreak = true;
                             }
 
-                            if (note.isEx) stobj.hasJudgeEx = true;
-                            if (!note.isBreak && !note.isEx) stobj.hasJudge = true;
+                            if (note.isEx) target.hasJudgeEx = true;
+                            if (!note.isBreak && !note.isEx) target.hasJudge = true;
                         }
-
+                        hasnote |= !target.isMine;
                         // Slide启动音效
                         var targetTime = note.slideStartTime;
-                        var nearIndex = waitToBePlayed.FindIndex(o => Math.Abs(o.time - targetTime) < 0.001f);
+                        var nearIndex = waitToBePlayed.FindIndex(o =>
+                            o.isMine == target.isMine && Math.Abs(o.time - targetTime) < 0.001f);
                         if (nearIndex != -1)
                         {
                             if (note.isSlideBreak)
@@ -303,9 +429,10 @@ public partial class MainWindow
                         {
                             SoundEffectTiming slide;
                             if (note.isSlideBreak)
-                                slide = new SoundEffectTiming(targetTime, _hasBreakSlideStart: true);
+                                slide = new SoundEffectTiming(targetTime, _hasBreakSlideStart: true,
+                                    _isMine: target.isMine);
                             else
-                                slide = new SoundEffectTiming(targetTime, _hasSlide: true);
+                                slide = new SoundEffectTiming(targetTime, _hasSlide: true, _isMine: target.isMine);
                             waitToBePlayed.Add(slide);
                         }
 
@@ -313,7 +440,8 @@ public partial class MainWindow
                         if (note.isSlideBreak)
                         {
                             targetTime = note.slideStartTime + note.slideTime;
-                            nearIndex = waitToBePlayed.FindIndex(o => Math.Abs(o.time - targetTime) < 0.001f);
+                            nearIndex = waitToBePlayed.FindIndex(o =>
+                                o.isMine == target.isMine && Math.Abs(o.time - targetTime) < 0.001f);
                             if (nearIndex != -1)
                             {
                                 waitToBePlayed[nearIndex].hasBreakSlide = true;
@@ -322,7 +450,7 @@ public partial class MainWindow
                             else
                             {
                                 var slide = new SoundEffectTiming(targetTime, _hasBreakSlide: true,
-                                    _hasJudgeBreakSlide: true);
+                                    _hasJudgeBreakSlide: true, _isMine: target.isMine);
                                 waitToBePlayed.Add(slide);
                             }
                         }
@@ -331,23 +459,23 @@ public partial class MainWindow
                     }
                     case SimaiNoteType.Touch:
                     {
-                            if (note.isMine) break;
-                            hasnote = true;
-                            stobj.hasAnswer = true;
-                        stobj.hasTouch = true;
-                        if (note.isHanabi) stobj.hasHanabi = true;
+                        hasnote |= !target.isMine;
+                        target.hasAnswer = true;
+                        target.hasTouch = true;
+                        if (note.isBreak) target.hasBreak = true; // break touch 额外播一下 break 音
+                        if (note.isHanabi) target.hasHanabi = true;
                         break;
                     }
                     case SimaiNoteType.TouchHold:
                     {
-                            if (note.isMine) break;
-                            hasnote = true;
-                            stobj.hasAnswer = true;
-                        stobj.hasTouch = true;
-                        stobj.hasTouchHold = true;
+                        hasnote |= !target.isMine;
+                        target.hasAnswer = true;
+                        target.hasTouch = true;
+                        target.hasTouchHold = true;
                         // 计算TouchHold结尾
                         var targetTime = noteGroup.time + note.holdTime;
-                        var nearIndex = waitToBePlayed.FindIndex(o => Math.Abs(o.time - targetTime) < 0.001f);
+                        var nearIndex = waitToBePlayed.FindIndex(o =>
+                            o.isMine == target.isMine && Math.Abs(o.time - targetTime) < 0.001f);
                         if (nearIndex != -1)
                         {
                             if (note.isHanabi) waitToBePlayed[nearIndex].hasHanabi = true;
@@ -357,19 +485,25 @@ public partial class MainWindow
                         else
                         {
                             var tHoldRelease = new SoundEffectTiming(targetTime, true, _hasHanabi: note.isHanabi,
-                                _hasTouchHoldEnd: true);
+                                _hasTouchHoldEnd: true, _isMine: target.isMine);
                             waitToBePlayed.Add(tHoldRelease);
                         }
 
                         break;
                     }
                 }
-            if (hasnote == false) continue;
-            hasnote = false;
-            if (combIndex != -1)
-                waitToBePlayed[combIndex] = stobj;
-            else
-                waitToBePlayed.Add(stobj);
+            }
+
+            if (hasnote)
+            {
+                if (combIndex != -1)
+                    waitToBePlayed[combIndex] = stobj;
+                else
+                    waitToBePlayed.Add(stobj);
+            }
+
+            if (hasMineNote && mineStobj != null && !waitToBePlayed.Contains(mineStobj))
+                waitToBePlayed.Add(mineStobj);
         }
 
         if (isOpIncluded) waitToBePlayed.Add(new SoundEffectTiming(GetAllPerfectStartTime(), _hasAllPerfect: true));
@@ -498,6 +632,11 @@ public partial class MainWindow
             typeSamples[sType] = new short[sampleCount];
         }
 
+        // 地雷音效单独一条轨：只有谱面里真的出现地雷才分配，写入时按组预乘地雷音量
+        var mineTrack = waitToBePlayed!.Any(o => o.isMine) ? new short[sampleCount] : null;
+        var mineAnswerVol = GetMineAnswerVolume();
+        var mineJudgeVol = GetMineJudgeVolume();
+
         SoundBank? getSampleFromType(SoundDataType type)
         {
             return type switch
@@ -531,16 +670,66 @@ public partial class MainWindow
                 typeSamples[type][time + t] = sample.Raw[t];
         }
 
+        void sampleWriteTo(int time, SoundDataType type, short[] target, float gain)
+        {
+            var sample = getSampleFromType(type);
+            if (sample == null) return;
+            if (sample.Raw == null) return;
+            if (sample.Frequency <= 0) return;
+            if (time < 0) return;
+            for (var t = 0; t < sample.RawSize && time + t < target.Length; t++)
+                target[time + t] = (short)(sample.Raw[t] * gain);
+        }
+
         void sampleWipe(int timeFrom, int timeTo, SoundDataType type)
         {
             for (var t = timeFrom; t < timeTo && t < typeSamples[type].Length; t++)
                 typeSamples[type][t] = 0;
         }
 
+        void sampleWipeTo(int timeFrom, int timeTo, short[] target)
+        {
+            for (var t = timeFrom; t < timeTo && t < target.Length; t++)
+                if (t >= 0)
+                    target[t] = 0;
+        }
+
         //生成每个音效的track
         foreach (var soundTiming in waitToBePlayed!)
         {
             var startIndex = (int)(soundTiming.time * freq) * 2; //乘2因为有两个channel
+
+            if (soundTiming.isMine && mineTrack != null)
+            {
+                // 地雷音效全部写进独立轨；正解音与其余音效分别预乘各自的音量
+                if (soundTiming.hasAnswer)
+                    sampleWriteTo(startIndex, SoundDataType.Answer, mineTrack, mineAnswerVol);
+                if (soundTiming.hasJudge)
+                    sampleWriteTo(startIndex, SoundDataType.Judge, mineTrack, mineJudgeVol);
+                if (soundTiming.hasJudgeBreak)
+                    sampleWriteTo(startIndex, SoundDataType.JudgeBreak, mineTrack, mineJudgeVol);
+                if (soundTiming.hasJudgeEx)
+                    sampleWriteTo(startIndex, SoundDataType.JudgeEX, mineTrack, mineJudgeVol);
+                if (soundTiming.hasBreak)
+                    sampleWriteTo(startIndex, SoundDataType.Break, mineTrack, mineJudgeVol);
+                if (soundTiming.hasHanabi)
+                    sampleWriteTo(startIndex, SoundDataType.Hanabi, mineTrack, mineJudgeVol);
+                if (soundTiming.hasTouchHold)
+                    sampleWriteTo(startIndex, SoundDataType.TouchHold, mineTrack, mineJudgeVol);
+                if (soundTiming.hasTouchHoldEnd) sampleWipeTo(startIndex, mineTrack.Length, mineTrack);
+                if (soundTiming.hasSlide)
+                    sampleWriteTo(startIndex, SoundDataType.Slide, mineTrack, mineJudgeVol);
+                if (soundTiming.hasTouch)
+                    sampleWriteTo(startIndex, SoundDataType.Touch, mineTrack, mineJudgeVol);
+                if (soundTiming.hasBreakSlideStart)
+                    sampleWriteTo(startIndex, SoundDataType.BreakSlideStart, mineTrack, mineJudgeVol);
+                if (soundTiming.hasBreakSlide)
+                    sampleWriteTo(startIndex, SoundDataType.BreakSlide, mineTrack, mineJudgeVol);
+                if (soundTiming.hasJudgeBreakSlide)
+                    sampleWriteTo(startIndex, SoundDataType.JudgeBreakSlide, mineTrack, mineJudgeVol);
+                continue;
+            }
+
             if (soundTiming.hasAnswer) sampleWrite(startIndex, SoundDataType.Answer);
             if (soundTiming.hasJudge) sampleWrite(startIndex, SoundDataType.Judge);
             if (soundTiming.hasJudgeBreak) sampleWrite(startIndex, SoundDataType.JudgeBreak);
@@ -617,6 +806,8 @@ public partial class MainWindow
         {
             // Apply BGM Data
             var sampleValue = bgmBank.Raw[i] * bgmVol;
+
+            if (mineTrack != null) sampleValue += mineTrack[i];
 
             foreach (var sampleTuple in typeSamples)
             {
@@ -758,6 +949,7 @@ public partial class MainWindow
     {
         public readonly bool hasAllPerfect;
         public readonly bool hasClock;
+        public readonly bool isMine; // 属于地雷音符的音效，播放时走地雷通道
         public readonly double time;
         public bool hasAnswer;
         public bool hasBreak;
@@ -779,9 +971,11 @@ public partial class MainWindow
             bool _hasBreak = false, bool _hasTouch = false, bool _hasHanabi = false,
             bool _hasJudgeEx = false, bool _hasTouchHold = false, bool _hasSlide = false,
             bool _hasTouchHoldEnd = false, bool _hasAllPerfect = false, bool _hasClock = false,
-            bool _hasBreakSlideStart = false, bool _hasBreakSlide = false, bool _hasJudgeBreakSlide = false)
+            bool _hasBreakSlideStart = false, bool _hasBreakSlide = false, bool _hasJudgeBreakSlide = false,
+            bool _isMine = false)
         {
             time = _time;
+            isMine = _isMine;
             hasAnswer = _hasAnswer;
             hasJudge = _hasJudge;
             hasJudgeBreak = _hasJudgeBreak; // 我是笨蛋

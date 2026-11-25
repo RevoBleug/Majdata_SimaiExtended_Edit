@@ -72,6 +72,8 @@ internal class MajSetting
     public float Ex_Level = 0.7f;
     public float Hanabi_Level = 0.7f;
     public float Judge_Level = 0.7f;
+    public float Mine_Answer_Level = 0.7f;
+    public float Mine_Judge_Level = 0.7f;
     public int lastEditDiff;
     public double lastEditTime;
     public float Slide_Level = 0.7f;
@@ -83,7 +85,7 @@ public class EditorSetting
 {
     public bool AutoCheckUpdate = true;
     public float backgroundCover = 0.6f;
-    public int ChartRefreshDelay = 1000;
+    public int ChartRefreshDelay = 120;
     public EditorComboIndicator comboStatusType = 0;
     public EditorPlayMethod editorPlayMethod;
     public string DecreasePlaybackSpeedKey = "Ctrl+o";
@@ -93,6 +95,8 @@ public class EditorSetting
     public float Default_Break_Slide_Level = 0.7f;
     public float Default_Ex_Level = 0.7f;
     public float Default_Hanabi_Level = 0.7f;
+    public float Default_Mine_Answer_Level = 0.7f;
+    public float Default_Mine_Judge_Level = 0.7f;
     public float Default_Judge_Level = 0.7f;
     public float Default_Slide_Level = 0.7f;
     public float Default_Touch_Level = 0.7f;

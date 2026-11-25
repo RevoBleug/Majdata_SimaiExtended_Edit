@@ -37,6 +37,9 @@ public partial class SoundSetting : Window
         SliderValueBindingMap.Add(EX_Slider, EX_Value);
         SliderValueBindingMap.Add(Touch_Slider, Touch_Value);
         SliderValueBindingMap.Add(Hanabi_Slider, Hanabi_Value);
+        SliderValueBindingMap.Add(MineAnswer_Slider, MineAnswer_Value);
+        SliderValueBindingMap.Add(MineJudge_Slider, MineJudge_Value);
+
 
         SetSlider(BGM_Slider, MainWindow.bgmStream, MainWindow.trackStartStream, MainWindow.allperfectStream,
             MainWindow.clockStream);
@@ -48,6 +51,8 @@ public partial class SoundSetting : Window
         SetSlider(EX_Slider, MainWindow.judgeExStream);
         SetSlider(Touch_Slider, MainWindow.touchStream);
         SetSlider(Hanabi_Slider, MainWindow.hanabiStream, MainWindow.holdRiserStream);
+        SetMineSlider(MineAnswer_Slider, true);
+        SetMineSlider(MineJudge_Slider, false);
 
         UpdateLevelTimer.AutoReset = true;
         UpdateLevelTimer.Elapsed += UpdateLevelTimer_Elapsed;
@@ -68,6 +73,8 @@ public partial class SoundSetting : Window
             UpdateProgressBar(EX_Level, MainWindow.judgeExStream);
             UpdateProgressBar(Touch_Level, MainWindow.touchStream);
             UpdateProgressBar(Hanabi_Level, MainWindow.hanabiStream, MainWindow.holdRiserStream);
+            UpdateProgressBar(MineAnswer_Level, MainWindow.GetMineAnswerChannel());
+            UpdateProgressBar(MineJudge_Level, MainWindow.GetMineJudgeChannel());
         });
     }
 
@@ -108,6 +115,24 @@ public partial class SoundSetting : Window
         slider.ValueChanged += Slider_ValueChanged;
     }
 
+    /// <summary>
+    ///     地雷音效是"一组通道共用同一音量"，所以不走 SetSlider 的通道绑定，直接用 MainWindow 的读写接口
+    /// </summary>
+    private void SetMineSlider(Slider slider, bool isAnswerGroup)
+    {
+        slider.Value = isAnswerGroup ? MainWindow.GetMineAnswerVolume() : MainWindow.GetMineJudgeVolume();
+        SliderValueBindingMap[slider].Content = slider.Value.ToString("P0");
+
+        slider.ValueChanged += (_, e) =>
+        {
+            if (isAnswerGroup)
+                MainWindow.SetMineVolume((float)e.NewValue, MainWindow.GetMineJudgeVolume());
+            else
+                MainWindow.SetMineVolume(MainWindow.GetMineAnswerVolume(), (float)e.NewValue);
+            SliderValueBindingMap[slider].Content = e.NewValue.ToString("P0");
+        };
+    }
+
     private void SoundSettingWindow_Closing(object sender, CancelEventArgs e)
     {
         UpdateLevelTimer.Stop();
@@ -134,6 +159,8 @@ public partial class SoundSetting : Window
             ref MainWindow.editorSetting!.Default_Touch_Level);
         Bass.BASS_ChannelGetAttribute(MainWindow.hanabiStream, BASSAttribute.BASS_ATTRIB_VOL,
             ref MainWindow.editorSetting!.Default_Hanabi_Level);
+        MainWindow.editorSetting!.Default_Mine_Answer_Level = MainWindow.GetMineAnswerVolume();
+        MainWindow.editorSetting!.Default_Mine_Judge_Level = MainWindow.GetMineJudgeVolume();
         MainWindow.SaveEditorSetting();
         MessageBox.Show(MainWindow.GetLocalizedString("SetVolumeDefaultSuccess"));
     }
@@ -149,5 +176,7 @@ public partial class SoundSetting : Window
         EX_Slider.Value = MainWindow.editorSetting!.Default_Ex_Level;
         Touch_Slider.Value = MainWindow.editorSetting!.Default_Touch_Level;
         Hanabi_Slider.Value = MainWindow.editorSetting!.Default_Hanabi_Level;
+        MineAnswer_Slider.Value = MainWindow.editorSetting!.Default_Mine_Answer_Level;
+        MineJudge_Slider.Value = MainWindow.editorSetting!.Default_Mine_Judge_Level;
     }
 }

@@ -59,11 +59,52 @@ namespace MajdataEdit.SyntaxModule
             };
             Action<string, int, int> addError = (s, x, y) => addInfo(s,x,y, "SyntaxError",InfomationLevel.Error);
 
+            // 拆掉尖括号指令并顺手校验；只认 HS* / SV* / SC*，其余一律算语法错误
+            string StripTags(string s, Action<string, int, int> err, int col, int ln)
+            {
+                if (s.IndexOf('<') < 0) return s;
+
+                var sb = new System.Text.StringBuilder(s.Length);
+                var i = 0;
+                while (i < s.Length)
+                {
+                    // '<' 也是滑条键位（1<3 这种），只有紧跟 HS* / SV* / SC* 才是指令
+                    var isDirective = s[i] == '<' && i + 3 < s.Length &&
+                                      (s.Substring(i + 1, 3) is "HS*" or "SV*" or "SC*");
+                    if (!isDirective)
+                    {
+                        sb.Append(s[i]);
+                        i++;
+                        continue;
+                    }
+
+                    var end = s.IndexOf('>', i + 1);
+                    if (end < 0)
+                    {
+                        err(s, col, ln);
+                        return sb.ToString();
+                    }
+
+                    var body = s.Substring(i + 1, end - i - 1);
+                    var ok = (body.StartsWith("HS*") || body.StartsWith("SV*") || body.StartsWith("SC*"))
+                             && IsSpeedValue(body.Substring(3));
+                    if (!ok) err("<" + body + ">", col, ln);
+                    i = end + 1;
+                }
+
+                return sb.ToString();
+            }
+
             await Task.Run(() =>
             {
                 ErrorList.Clear();
                 int line = 1;
-                int column = 1;                
+                int column = 1;
+                // 组引用检查：引用了没定义的组 / 组里又插组
+                foreach (var groupError in GroupSyntax.FindGroupErrors(str))
+                    addError(groupError, 1, 1);
+                // <GR:name>…</GR> 定义块：去掉标记、内容留在原位一起检查；<GR*name> 插入标记去掉
+                str = GroupSyntax.StripForSyntax(str);
                 var simaiChart = str.Split(",");
 
                 if(!string.IsNullOrEmpty(str))
@@ -93,11 +134,14 @@ namespace MajdataEdit.SyntaxModule
                     var notes = simaiStr.Split(new char[] { '/','`'});
                     for (int i = 0;i < notes.Length;i++)
                     {
-                        var noteStr = notes[i];
+                        // 先把 <HS*> <SV*> <SC*> 指令拆出来校验并去掉，剩下的才当音符检查。
+                        // 原来 SpecialSyntaxCheck 只在带 ()/{} 时才处理这些指令，
+                        // 于是 <SV*0.5>1 这种会被整串当音符，直接报语法错。
+                        var noteStr = StripTags(notes[i], addError, column, line);
 
                         if (string.IsNullOrEmpty(noteStr))
                         {
-                            addError(simaiStr, column, line);
+                            if (string.IsNullOrEmpty(notes[i])) addError(simaiStr, column, line);
                             continue;
                         }
                         if (i == 0 && !SpecialSyntaxCheck(ref noteStr, column, line))
@@ -228,20 +272,17 @@ namespace MajdataEdit.SyntaxModule
                     var tagTail = tagIndex[1];
                     var body = simaiStr[(tagHead + 1)..tagTail];
 
-                    var s = body.Split("HS*");
-                    s = body.Split("SV*");
+                    // 支持 HS* / SV* / SC*，值可以带渐变：1.5#4:1（按拍）或 1.5##1.145（按秒）
+                    string[] s;
+                    if (body.StartsWith("HS*") || body.StartsWith("SV*") || body.StartsWith("SC*"))
+                        s = new[] { "", body[3..] };
+                    else
+                    {
+                        addError(simaiStr);
+                        return false;
+                    }
 
-                    if (s.Length != 2)//正常情况分割后的得到的Array长度应当是2
-                    {
-                        addError(simaiStr);
-                        return false;
-                    }
-                    else if (!string.IsNullOrEmpty(s[0]))//正常情况第一个元素应当是Empty
-                    {
-                        addError(simaiStr);
-                        return false;
-                    }
-                    else if (!IsNum(s[1]))//第二个元素应当是Number
+                    if (!IsSpeedValue(s[1]))
                     {
                         addError(simaiStr);
                         return false;
@@ -285,7 +326,7 @@ namespace MajdataEdit.SyntaxModule
                     addError(simaiStr);
                     return false;
                 }
-                if (hadBpm && !IsNum(simaiStr[(bpmFirstIndex + 1)..(bpmEndIndex)]))
+                if (hadBpm && !IsBpmExpr(simaiStr[(bpmFirstIndex + 1)..(bpmEndIndex)]))
                 {
                     addError(simaiStr);
                     return false;
@@ -317,7 +358,7 @@ namespace MajdataEdit.SyntaxModule
                 if(i + 3 < simaiStr.Length)
                 {
                     var s = simaiStr[i..(i + 3)];
-                    if(s == "HS*" || s == "SV*")
+                    if(s == "HS*" || s == "SV*" || s == "SC*")
                     {
                         if (tagHead != null)
                             return null;
@@ -966,30 +1007,101 @@ namespace MajdataEdit.SyntaxModule
         /// <returns></returns>
         static bool IsTouch(string s)
         {
-            char sensor = s[0];
+            // 形如 A4h[4:1] 的 touch-hold：先把参数剥出来单独校验
+            var core = s;
+            var body = "";
+            var bracket = s.IndexOf('[');
+            if (bracket >= 0)
+            {
+                core = s[..bracket];
+                body = s[(bracket + 1)..].TrimEnd(']');
+            }
 
-            if (s.Length is not (1 or 2 or 3))//Touch长度只能是1,2或3 ; e.g. C,B1,B1f,B1m
+            if (core.Length is not (1 or 2 or 3))//Touch长度只能是1,2或3 ; e.g. C,B1,B1f,A4b,A4h
                 return false;
 
-            if (s.Length == 1)// C
-                return s[0] == 'C';
-            else if (!SensorList.Contains(sensor))// 判断触控区号是否合法
+            var sensor = core[0];
+            if (!SensorList.Contains(sensor))// 判断触控区号是否合法
                 return false;
-            else if (s.Length == 2 && s[0] == 'C')// C1 or Cf or Cm
-                return s[1] is '1' or 'f' or 'm';
-            else if (s.Length == 3 && s[0] == 'C')// C1f or C1m
-                return s[1] == '1' && (s[2] == 'f' || s[2] == 'm');
-            else if (s.Length == 3)// A1f B1f A1m B1m
-                return (s[2] == 'f' || s[2] == 'm') && int.TryParse(s[1..2], out int i) && PointCheck(i);
-            else//A1 B1
-                return int.TryParse(s[1..2], out int i) && PointCheck(i);
+
+            // 参数：x:y 比例，或 #秒
+            var bodyOk = body.Length == 0;
+            if (!bodyOk)
+                bodyOk = body[0] == '#'
+                    ? double.TryParse(body[1..], out var sec) && sec >= 0
+                    : RatioSyntaxCheck(body);
+            if (!bodyOk)
+                return false;
+
+            if (core.Length == 1)// C
+                return true;
+
+            if (sensor == 'C')// C1 / Cf / Cm / Cb / C1f ...
+                return core[1..].All(c => c is '1' or 'f' or 'm' or 'b' or 'h');
+
+            if (!int.TryParse(core[1..2], out var pos) || !PointCheck(pos))// A1 B1...
+                return false;
+
+            return core.Length == 2 || core[2] is 'f' or 'm' or 'b' or 'h';
         }
         /// <summary>
         /// 判断string是否为数字
         /// </summary>
         /// <param name="s"></param>
         /// <returns></returns>
+        /// <summary>
+        /// 变速值校验：1.5 / 1.5#4:1 / 1.5##1.145
+        /// </summary>
+        static bool IsSpeedValue(string v)
+        {
+            var hash = v.IndexOf('#');
+            var valuePart = hash < 0 ? v : v[..hash];
+
+            // <SV*起:止#...> / <SC*起:止#...>：冒号前是显式起始值
+            var colon = valuePart.IndexOf(':');
+            if (colon >= 0)
+            {
+                if (!double.TryParse(valuePart[..colon], out _)) return false;
+                valuePart = valuePart[(colon + 1)..];
+            }
+
+            if (!double.TryParse(valuePart, out _)) return false;
+            if (hash < 0) return true;
+
+            var tail = v[(hash + 1)..];
+            if (tail.StartsWith("#"))
+                return double.TryParse(tail[1..], out var sec) && sec >= 0;
+            return RatioSyntaxCheck(tail);
+        }
         static bool IsNum(string s) => IsInteger(s) || IsFloat(s);
+
+        /// <summary>
+        ///     BPM 括号里的表达式，支持 (90) / (90#7/8) / (90#7/8&amp;80) / (90&amp;80)。
+        ///     &amp; 之后是星星启动速度，必须是数字；# 之后是拍号，分子分母都必须是正整数。
+        /// </summary>
+        static bool IsBpmExpr(string s)
+        {
+            var amp = s.IndexOf('&');
+            if (amp >= 0)
+            {
+                if (!IsNum(s[(amp + 1)..])) return false;
+                s = s[..amp];
+            }
+
+            var hash = s.IndexOf('#');
+            if (hash < 0) return IsNum(s);
+
+            if (!IsNum(s[..hash])) return false;
+
+            var signature = s[(hash + 1)..];
+            var parts = signature.Split('/');
+            if (parts.Length > 2) return false;
+            if (!IsInteger(parts[0]) || !int.TryParse(parts[0], out var num) || num <= 0) return false;
+            if (parts.Length == 2 && (!IsInteger(parts[1]) || !int.TryParse(parts[1], out var den) || den <= 0))
+                return false;
+
+            return true;
+        }
         static bool IsInteger(string s) => int.TryParse(s, out int i);
         static bool IsFloat(string s) => double.TryParse(s, out double i);
         /// <summary>

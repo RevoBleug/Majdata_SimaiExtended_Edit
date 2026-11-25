@@ -8,7 +8,7 @@
         lex:ResxLocalizationProvider.DefaultAssembly="MajdataEdit"
         lex:ResxLocalizationProvider.DefaultDictionary="Langs"
         mc:Ignorable="d"
-        Title="SoundSetting" Height="381" Width="1149" Background="{DynamicResource WindowBackground}" MinHeight="290"
+        Title="SoundSetting" Height="381" Width="1396" Background="{DynamicResource WindowBackground}" MinHeight="290"
         MinWidth="646" ResizeMode="NoResize" Loaded="SoundSettingWindow_Loaded" Closing="SoundSettingWindow_Closing">
     <Grid>
         <Grid HorizontalAlignment="Left" Margin="10,10,0,56" Width="120" Background="#FF272727"
@@ -140,8 +140,37 @@
             <Label Content="Hanabi" Margin="30,21,32,0" VerticalAlignment="Top"
                    Foreground="{DynamicResource ButtonForeground}" HorizontalAlignment="Center" />
         </Grid>
-        <Grid HorizontalAlignment="Center" Margin="0,295,0,10">
+        <Grid HorizontalAlignment="Left" Margin="1135,10,0,56" Width="120" Background="#FF272727"
+              ToolTip="地雷音符的正解音音量">
+            <Label x:Name="MineAnswer_Value" Content="100%" Margin="23,240,23,2" VerticalAlignment="Top"
+                   Foreground="{DynamicResource ButtonForeground}" HorizontalAlignment="Center" Width="74"
+                   HorizontalContentAlignment="Center" />
+            <ProgressBar x:Name="MineAnswer_Level" HorizontalAlignment="Center" Margin="51,51,51,50" Width="18"
+                         Orientation="Vertical" Maximum="41" Foreground="#FF8A8A8A" Opacity="0.69"
+                         Background="{x:Null}" BorderBrush="{x:Null}" />
+            <Slider x:Name="MineAnswer_Slider" Margin="42,51,42,50" Orientation="Vertical" HorizontalAlignment="Center"
+                    TickPlacement="TopLeft" TickFrequency="0.05" IsSnapToTickEnabled="True" Maximum="1" Value="1"
+                    Opacity="0.7" />
+            <Label Content="MineAns" Margin="0,21,0,0" VerticalAlignment="Top"
+                   Foreground="{DynamicResource ButtonForeground}" HorizontalAlignment="Center" />
+        </Grid>
+        <Grid HorizontalAlignment="Left" Margin="1260,10,0,56" Width="120" Background="#FF272727"
+              ToolTip="地雷音符的判定音/击打音/滑条启动音等（正解音以外的全部）">
+            <Label x:Name="MineJudge_Value" Content="100%" Margin="23,240,23,2" VerticalAlignment="Top"
+                   Foreground="{DynamicResource ButtonForeground}" HorizontalAlignment="Center" Width="74"
+                   HorizontalContentAlignment="Center" />
+            <ProgressBar x:Name="MineJudge_Level" HorizontalAlignment="Center" Margin="51,51,51,50" Width="18"
+                         Orientation="Vertical" Maximum="41" Foreground="#FFB0B0B0" Opacity="0.69"
+                         Background="{x:Null}" BorderBrush="{x:Null}" />
+            <Slider x:Name="MineJudge_Slider" Margin="42,51,42,50" Orientation="Vertical" HorizontalAlignment="Center"
+                    TickPlacement="TopLeft" TickFrequency="0.05" IsSnapToTickEnabled="True" Maximum="1" Value="1"
+                    Opacity="0.7" />
+            <Label Content="MineJdg" Margin="0,21,0,0" VerticalAlignment="Top"
+                   Foreground="{DynamicResource ButtonForeground}" HorizontalAlignment="Center" />
+        </Grid>
+        <Grid HorizontalAlignment="Left" Margin="347,295,0,10" Width="696">
             <Grid.ColumnDefinitions>
+                <ColumnDefinition />
                 <ColumnDefinition />
                 <ColumnDefinition />
             </Grid.ColumnDefinitions>
@@ -152,5 +181,6 @@
                     Click="BtnSetToDefault_Click" Width="200" Height="30" Template="{DynamicResource DarkButton}"
                     Foreground="{DynamicResource ButtonForeground}" Background="{DynamicResource ButtonsBackground}" />
         </Grid>
+
     </Grid>
 </Window>

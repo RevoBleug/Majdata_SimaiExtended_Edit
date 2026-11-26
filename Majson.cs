@@ -24,6 +24,7 @@ internal class EditRequestjson
     public float startTime;
     public float touchSpeed;
     public bool smoothSlideAnime;
+    public bool wideNoteHollow = true; // 宽音符空心/实心，默认空心
 }
 
 public enum EditorPlayMethod
@@ -118,4 +119,6 @@ public class EditorSetting
     public string SendViewerKey = "Ctrl+Shift+z";
     public float touchSpeed = 7.5f;
     public bool SmoothSlideAnime = false;
+    /// <summary>宽音符是否空心（胶囊轮廓）。true = 空心（默认），false = 实心填充带。</summary>
+    public bool WideNoteHollow = true;
 }

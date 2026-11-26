@@ -49,6 +49,13 @@ public partial class MainWindow : Window
     //float[] wavedBs;
     private readonly short[][] waveRaws = new short[3][];
     public Timer chartChangeTimer = new(1000); // 谱面变更延迟解析]\
+
+    /// <summary>
+    ///     小于这个字符数就直接解析，不等 ChartRefreshDelay。
+    ///     延迟解析是为了"十几万字符一次解析 20~30ms 连按会卡"，
+    ///     几千字符的谱面解析只要一两毫秒，再拖 120ms 只会让下边栏的音符位置慢一拍。
+    /// </summary>
+    private const int FastParseCharLimit = 20000;
     private readonly Timer currentTimeRefreshTimer = new(100);
 
     public DiscordRpcClient DCRPCclient = new("1068882546932326481");
@@ -611,7 +618,10 @@ public partial class MainWindow : Window
         Dispatcher.Invoke(
             delegate
             {
-                SimaiProcess.Serialize(GetRawFumenText(), GetRawFumenPosition());
+                // 解析完要把光标时间同步给三角：文本刚改过时 SelectionChanged 走的是
+                // "沿用上次时间"的分支，不会更新 ghostCusorPositionTime，
+                // 所以输入新逗号后光标走了、三角却停在原地看着不跟。
+                ghostCusorPositionTime = (float)SimaiProcess.Serialize(GetRawFumenText(), GetRawFumenPosition());
                 DrawWave();
             }
         );
@@ -675,10 +685,42 @@ public partial class MainWindow : Window
     private double beatCacheSongLength = double.NaN;
     private int lastWaveDrawTick;
 
+    // HS / SV / SC 事件：开始时刻 + 持续时长（秒）。带渐变的画成长条，瞬间的画成小方块
+    private readonly List<(double Start, double Duration)> hsEventSpans = new();
+    private readonly List<(double Start, double Duration)> svEventSpans = new();
+    private readonly List<(double Start, double Duration)> scEventSpans = new();
+    private int eventCacheVersion = -1;
+
     /// <summary>
     ///     小节线/拍线的分段只跟谱面内容有关，解析完算一次就够。
     ///     DrawWave 是被 1ms 定时器反复调用的，上万时间点的谱面每帧重算会把 UI 线程吃满。
     /// </summary>
+    private int noteSpanVersion = -1;
+    private double noteSpanCache;
+
+    /// <summary>
+    ///     谱面里最长的一条音符持续多久（hold / touchhold / slide 的长条）。
+    ///     DrawWave 每帧只扫可见窗口，但长条可能从窗口左侧外面伸进来，
+    ///     所以往左多回溯这么长一段时间，跨窗口的音符才不会被整条漏掉。
+    /// </summary>
+    private double GetMaxNoteSpan()
+    {
+        if (noteSpanVersion == SimaiProcess.ParseVersion) return noteSpanCache;
+        noteSpanVersion = SimaiProcess.ParseVersion;
+
+        var max = 0.0;
+        foreach (var point in SimaiProcess.notelist)
+        {
+            if (point == null || string.IsNullOrEmpty(point.notesContent)) continue;
+            foreach (var nd in point.getNotes())
+                if (nd.holdTime > max)
+                    max = nd.holdTime;
+        }
+
+        noteSpanCache = max;
+        return max;
+    }
+
     private void EnsureBeatCache()
     {
         var songLen = Bass.BASS_ChannelBytes2Seconds(bgmStream, Bass.BASS_ChannelGetLength(bgmStream));
@@ -745,6 +787,67 @@ public partial class MainWindow : Window
 
             time = bpmChangeTimes[i];
             currentBeat = 1;
+        }
+    }
+
+    /// <summary>
+    ///     HS / SV / SC 事件的时间点，画在波形底部三条独立轨道上。
+    ///     和节拍线一样只跟谱面内容有关，按 ParseVersion 缓存，不每帧重扫。
+    ///     判定"这里有个事件"：值变了，或者带渐变 / 显式起值（渐变到同一个值也是一次事件）。
+    /// </summary>
+    private void EnsureEventCache()
+    {
+        if (eventCacheVersion == SimaiProcess.ParseVersion) return;
+        eventCacheVersion = SimaiProcess.ParseVersion;
+
+        hsEventSpans.Clear();
+        svEventSpans.Clear();
+        scEventSpans.Clear();
+
+        var prevHs = float.NaN;
+        var prevSv = float.NaN;
+        var prevSc = float.NaN;
+
+        foreach (var timing in SimaiProcess.timinglist)
+        {
+            // 组内的 HS/SV/SC 只作用于组，不是主谱面的全局事件
+            if (timing.groupIndex != 0) continue;
+
+            if (!float.IsNaN(prevHs) && Math.Abs(timing.HSpeed - prevHs) > 1e-6f)
+                hsEventSpans.Add((timing.time, 0d)); // HS 没有渐变时长，永远是瞬时
+            prevHs = timing.HSpeed;
+
+            if (!float.IsNaN(prevSv) &&
+                (Math.Abs(timing.SVeloc - prevSv) > 1e-6f || timing.SVTransition > 0.0001f || timing.hasSVStart))
+                svEventSpans.Add((timing.time, timing.SVTransition));
+            prevSv = timing.SVeloc;
+
+            if (!float.IsNaN(prevSc) &&
+                (Math.Abs(timing.Scale - prevSc) > 1e-6f || timing.ScaleTransition > 0.0001f || timing.hasScaleStart))
+                scEventSpans.Add((timing.time, timing.ScaleTransition));
+            prevSc = timing.Scale;
+        }
+    }
+
+    /// <summary>
+    ///     把一串事件画成一条轨道上的色块。
+    ///     带渐变的事件（SV/SC 的 #x:y 时长）画成 hold 那样的长条，瞬时事件画成固定宽度的小方块。
+    /// </summary>
+    private static void DrawEventTrack(Graphics graphics, Brush brush, List<(double Start, double Duration)> spans,
+        float y, float h, double step, int startindex, float linewidth, double currentTime, double deltatime)
+    {
+        const float minWidth = 4f;
+
+        foreach (var (start, duration) in spans)
+        {
+            // 列表按开始时间升序：一旦超出右边界，后面都不用画了
+            if (start - currentTime > deltatime) break;
+            if (start + duration - currentTime < -deltatime) continue;
+
+            var x = ((float)(start / step) - startindex) * linewidth;
+            var w = (float)(duration / step) * linewidth;
+            if (w < minWidth) w = minWidth;
+            graphics.FillRectangle(brush, x, y, w, h);
         }
     }
 
@@ -843,6 +946,8 @@ public partial class MainWindow : Window
                 graphics.DrawLine(pen, x, 0, x, 15);
             }
 
+            // HS / SV / SC 事件轨道放到最后画（见绘制收尾），否则会被后面的 timing line 和音符盖住
+
             //Draw timing lines
             // 只遍历可见时间窗：时间点可能上万个，全表扫一遍等于每帧做几万次无用判断
             pen = new Pen(Color.White, 1);
@@ -857,8 +962,12 @@ public partial class MainWindow : Window
             }
 
             //Draw notes
+            // 起点要再往左回溯一个"最长音符长度"：hold / slide 的长条从窗口左侧外面伸进来时，
+            // 头部时间已经早于 currentTime - deltatime，只按可见窗扫描会整条漏掉，
+            // 看起来就是"明明还在视野里的 hold 突然不画了"。
             var notePoints = SimaiProcess.notelist;
-            for (var ni = LowerBoundByTime(notePoints, currentTime - deltatime); ni < notePoints.Count; ni++)
+            var scanFrom = currentTime - deltatime - GetMaxNoteSpan();
+            for (var ni = LowerBoundByTime(notePoints, scanFrom); ni < notePoints.Count; ni++)
             {
                 var note = notePoints[ni];
                 if (note == null) break;
@@ -891,7 +1000,43 @@ public partial class MainWindow : Window
 
                     if (noteD.noteType == SimaiNoteType.Tap)
                     {
-                        if (noteD.isForceStar)
+                        if (noteD.isWide)
+                        {
+                            // 宽音符在时间轴上是一条竖线：横向表示时刻，纵向表示它覆盖的键位范围。
+                            // 圆点看不出跨度，尤其是 3>5 这种绕了七格的，只能靠竖线的高度分辨。
+                            pen.Width = 3;
+                            if (noteD.isMine)
+                                pen.Color = Color.LightGray;
+                            else if (noteD.isBreak)
+                                pen.Color = Color.OrangeRed;
+                            else if (isEach)
+                                pen.Color = Color.Gold;
+                            else
+                                pen.Color = Color.LightPink;
+
+                            int lo = noteD.startPosition, hi = noteD.startPosition;
+                            if (noteD.wideEndPosition == noteD.startPosition)
+                            {
+                                lo = 1; // 整圈，覆盖全部键位
+                                hi = 8;
+                            }
+                            else
+                            {
+                                var steps = noteD.isWideClockwise
+                                    ? (noteD.wideEndPosition - noteD.startPosition + 8) % 8
+                                    : (noteD.startPosition - noteD.wideEndPosition + 8) % 8;
+                                var cur = noteD.startPosition;
+                                for (var s = 0; s <= steps; s++)
+                                {
+                                    if (cur < lo) lo = cur;
+                                    if (cur > hi) hi = cur;
+                                    cur = noteD.isWideClockwise ? (cur == 8 ? 1 : cur + 1) : (cur == 1 ? 8 : cur - 1);
+                                }
+                            }
+
+                            graphics.DrawLine(pen, x, lo * 6.875f + 8f, x, hi * 6.875f + 8f);
+                        }
+                        else if (noteD.isForceStar)
                         {
                             pen.Width = 3;
                             if (noteD.isMine)
@@ -1014,6 +1159,15 @@ public partial class MainWindow : Window
                 }
             }
 
+            //Draw current play head
+            // 波形窗口始终是 [currentTime - deltatime, currentTime + deltatime]，
+            // 所以"现在"永远落在位图正中。这条线原来是 XAML 里的固定 Margin 元素，
+            // 位图宽度和控件宽度一旦有偏差（窗口缩放 / DPI），它就会和三角错开。
+            // 画进同一张位图，两者共用一套坐标，不可能再对不上。
+            pen = new Pen(Color.Red, 3);
+            var xNow = (float)((currentTime / step - startindex) * linewidth);
+            graphics.DrawLine(pen, xNow, 15, xNow, 56);
+
             if (playStartTime - currentTime <= deltatime)
             {
                 //Draw play Start time
@@ -1031,6 +1185,16 @@ public partial class MainWindow : Window
                 PointF[] tranglePoints2 = { new(x2 - 2, 0), new(x2 + 2, 0), new(x2, 3.46f) };
                 graphics.DrawPolygon(pen, tranglePoints2);
             }
+
+            // HS / SV / SC 事件轨道：画在最后，否则会被节拍线、timing line、音符盖住。
+            // 底部三条独立轨道，上到下 HS → SV → SC，各 3px 高。
+            // 音符的 y 最大到 63，这里从 height-9 起，不会压到音符。
+            // Brushes 在 System.Drawing 和 System.Windows.Media 里都有，这里必须写全名。
+            EnsureEventCache();
+            var evtTop = height - 9;
+            DrawEventTrack(graphics, System.Drawing.Brushes.DodgerBlue, hsEventSpans, evtTop, 3f, step, startindex, linewidth, currentTime, deltatime);
+            DrawEventTrack(graphics, System.Drawing.Brushes.Magenta, svEventSpans, evtTop + 3, 3f, step, startindex, linewidth, currentTime, deltatime);
+            DrawEventTrack(graphics, System.Drawing.Brushes.Cyan, scEventSpans, evtTop + 6, 3f, step, startindex, linewidth, currentTime, deltatime);
 
             graphics.Flush();
             graphics.Dispose();
@@ -1370,6 +1534,7 @@ public partial class MainWindow : Window
             request.comboStatusType = editorSetting!.comboStatusType;
             request.audioSpeed = GetPlaybackSpeed();
             request.smoothSlideAnime = editorSetting!.SmoothSlideAnime;
+            request.wideNoteHollow = editorSetting!.WideNoteHollow;
             request.editorPlayMethod = editorSetting.editorPlayMethod;
         });
 

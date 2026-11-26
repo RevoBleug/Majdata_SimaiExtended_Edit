@@ -171,6 +171,7 @@ internal static class SimaiProcess
 
         cachedText = original;
         cachedFirst = first;
+        fastTableText = original;
         cachedRequested = requested;
         ParseVersion++;
 
@@ -228,6 +229,8 @@ internal static class SimaiProcess
     }
 
     private static string? cachedText;
+    /// <summary>当前 commaCharIndex / commaStartTime 对应的是哪份文本（快速重建和完整解析共用这两个表）</summary>
+    private static string? fastTableText;
     private static float cachedFirst;
     private static double cachedRequested;
     private static Dictionary<string, string>? cachedGroups;
@@ -259,7 +262,11 @@ internal static class SimaiProcess
         while (lo <= hi)
         {
             var mid = (lo + hi) >> 1;
-            if (commaCharIndex[mid] <= position)
+            // 必须是严格小于：commaCharIndex 存的是逗号字符本身的位置，
+            // 光标停在逗号上（position == 逗号下标，即光标紧贴逗号左边）时还属于本格，
+            // 越过逗号（position 更大）才算进下一格。
+            // 原来写的是 <=，光标在 "1w5[8:1]|,,," 这种"格尾、逗号前"的地方会被算成下一格，整体偏一格。
+            if (commaCharIndex[mid] < position)
             {
                 ans = mid;
                 lo = mid + 1;
@@ -271,6 +278,125 @@ internal static class SimaiProcess
         }
 
         return ans < 0 ? first : commaStartTime[ans];
+    }
+
+    /// <summary>
+    ///     只重建"逗号字符位置 → 该格起始时间"表，不生成任何音符对象。
+    ///     输入谱面时每个字符都要更新光标时间（波形三角要实时跟手），
+    ///     完整解析一次要 20~30ms，按键时会明显发黏；这里只按 SerializeCore 的规则推进 time，
+    ///     十几万字符也只有零点几毫秒。
+    ///     规则必须和 SerializeCore 保持一致：|| 注释、{beats}、(bpm)、&lt;GR:…&gt; 定义块占位、逗号推进。
+    /// </summary>
+    public static void BuildCommaTableFast(string text)
+    {
+        // 文本没变就不用重算（方向键移动光标时每次都会走到这里）
+        if (fastTableText != null && string.Equals(fastTableText, text, StringComparison.Ordinal)) return;
+        fastTableText = text;
+        // 表已经换成"当前文本"的了，缓存里那份（对应旧文本）不能再命中，
+        // 否则删掉刚输入的字符后文本回到旧值，会拿新表当旧表用，整体错位。
+        cachedText = null;
+
+        commaCharIndex.Clear();
+        commaStartTime.Clear();
+        if (text == null || text.Length == 0) return;
+
+        double time = first;
+        var bpm = 0f;
+        var beats = 4;
+        var i = 0;
+        var n = text.Length;
+
+        while (i < n)
+        {
+            var c = text[i];
+
+            if (c == '|' && i + 1 < n && text[i + 1] == '|')
+            {
+                while (i < n && text[i] != '\n') i++;
+                continue;
+            }
+
+            if (c == '(')
+            {
+                var start = ++i;
+                while (i < n && text[i] != ')') i++;
+                var expr = text.Substring(start, i - start);
+                i++;
+                // (90#7/8&80)：拍号和星星速度都不影响格子时长，只取 bpm
+                var amp = expr.IndexOf('&');
+                if (amp >= 0) expr = expr[..amp];
+                var hash = expr.IndexOf('#');
+                if (hash >= 0) expr = expr[..hash];
+                if (float.TryParse(expr, out var parsedBpm) && parsedBpm > 0f) bpm = parsedBpm;
+                continue;
+            }
+
+            if (c == '{')
+            {
+                var start = ++i;
+                while (i < n && text[i] != '}') i++;
+                var beatsText = text.Substring(start, i - start);
+                i++;
+                if (int.TryParse(beatsText, out var parsedBeats) && parsedBeats > 0) beats = parsedBeats;
+                continue;
+            }
+
+            if (c == '<')
+            {
+                // <GR:name>…</GR> 是组定义，整块不占主时间轴。
+                // 两边都是逗号时后面的逗号也要一起吃掉——和 ExtractDefinitions 的占位规则一致，
+                // 否则会凭空多一个空拍，后面所有格子的时间整体后移。
+                if (i + 4 <= n && string.CompareOrdinal(text, i, "<GR:", 0, 4) == 0)
+                {
+                    var nameEnd = text.IndexOf('>', i + 4);
+                    var close = nameEnd < 0 ? -1 : text.IndexOf("</GR>", nameEnd, StringComparison.Ordinal);
+                    if (close < 0)
+                    {
+                        i = n;
+                        break;
+                    }
+
+                    var blockEnd = close + 5;
+                    if (i > 0 && text[i - 1] == ',' && blockEnd < n && text[blockEnd] == ',') blockEnd++;
+                    i = blockEnd;
+                    continue;
+                }
+
+                // 注意：'<' 同时也是宽音符的方向符（5<2 是"5 往逆时针到 2"），
+                // 不能见到 '<' 就吞到下一个 '>'，否则整段谱面会被跳过去。
+                // 只有 </GR> 和 <HS*/<SV*/<SC*/<GR* 是真正的指令。
+                if (i + 5 <= n && string.CompareOrdinal(text, i, "</GR>", 0, 5) == 0)
+                {
+                    i += 5;
+                    continue;
+                }
+
+                if (i + 4 <= n)
+                {
+                    var head = text.Substring(i + 1, 3);
+                    if (head == "HS*" || head == "SV*" || head == "SC*" || head == "GR*")
+                    {
+                        var close = text.IndexOf('>', i + 4);
+                        i = close < 0 ? n : close + 1;
+                        continue;
+                    }
+                }
+
+                i++;
+                continue;
+            }
+
+            if (c == ',')
+            {
+                if (bpm > 0f) time += 1d / (bpm / 60d) * 4d / beats;
+                commaCharIndex.Add(i);
+                commaStartTime.Add(time);
+                i++;
+                continue;
+            }
+
+            i++;
+        }
     }
 
     /// <summary>
@@ -676,6 +802,46 @@ internal static class SimaiProcess
         if (index == 6) return "ORIGINAL";
         return "DEFAULT";
     }
+
+    /// <summary>
+    ///     宽音符：5&gt;3 / 5&lt;3，可带 b / x / c / m 后缀（5&gt;3b、5b&gt;3、5&gt;3x、5&gt;3c…），只有 Tap / Break 有。
+    ///     规则是"剥掉后缀之后正好是 键位 + 尖括号 + 键位"，整体不含方括号——
+    ///     带 [时长] 的仍然是 slide（合法 slide 必须有时长，不带 [] 的 5&gt;3 本来就是坏写法）。
+    ///     放在 SimaiProcess 而不是 SimaiTimingPoint，是因为语法检查也要用。
+    /// </summary>
+    public static bool TryParseWideNote(string noteText, out int startPos, out int endPos, out bool clockwise)
+    {
+        startPos = 0;
+        endPos = 0;
+        clockwise = false;
+
+        if (noteText.IndexOf('[') >= 0) return false;
+
+        // b=break  x=EX  c=不跟 SV  m=mine，这几个后缀位置自由（5b>3 和 5>3b 都合法）
+        var buf = new StringBuilder(4);
+        for (var i = 0; i < noteText.Length; i++)
+        {
+            var ch = noteText[i];
+            if (ch == 'b' || ch == 'x' || ch == 'c' || ch == 'm') continue;
+            buf.Append(ch);
+        }
+        if (buf.Length != 3) return false;
+
+        var s = buf[0];
+        var mark = buf[1];
+        var e = buf[2];
+        if (s < '1' || s > '8' || e < '1' || e > '8') return false;
+        if (mark != '>' && mark != '<') return false;
+
+        startPos = s - '0';
+        endPos = e - '0';
+
+        // 7812 半圈：> 顺时针、< 逆时针；3456 半圈反过来。
+        // 这样符号看起来就是箭头指向的方向，和键位在圆上的切线方向一致。
+        var upperHalf = startPos is 7 or 8 or 1 or 2;
+        clockwise = upperHalf ? mark == '>' : mark == '<';
+        return true;
+    }
 }
 
 internal class SimaiTimingPoint
@@ -810,8 +976,18 @@ internal class SimaiTimingPoint
             simaiNote.noteType = SimaiNoteType.Tap; //if nothing happen in following if
         }
 
+        // 宽音符：只有 Tap / Break。必须在 slide 判断之前定下来，
+        // 否则 5>3 会被 isSlideNote 当成 slide（含 '>'），再去要 [时长] 而崩掉。
+        if (SimaiProcess.TryParseWideNote(noteText, out var wideStart, out var wideEnd, out var wideClockwise))
+        {
+            simaiNote.startPosition = wideStart;
+            simaiNote.wideEndPosition = wideEnd;
+            simaiNote.isWideClockwise = wideClockwise;
+            simaiNote.isWide = true;
+            simaiNote.noteType = SimaiNoteType.Tap;
+        }
+
         if (noteText.Contains('f')) simaiNote.isHanabi = true;
-        if (noteText.Contains('c')) simaiNote.canSVAffect = false;
 
         //hold
         if (noteText.Contains('h'))
@@ -834,7 +1010,7 @@ internal class SimaiTimingPoint
         }
 
         //slide
-        if (isSlideNote(noteText))
+        if (!simaiNote.isWide && isSlideNote(noteText))
         {
             simaiNote.noteType = SimaiNoteType.Slide;
             simaiNote.slideTime = getTimeFromBeats(noteText);
@@ -935,9 +1111,47 @@ internal class SimaiTimingPoint
             noteText = noteText.Replace("x", "");
         }
 
+        // c：让音符不跟 SV 走。对星星来说，c 写的位置决定它作用在谁身上：
+        //   5c-1[8:1]            c 在轨迹符号之前 → 只作用于星星头，滑条照常跟 SV
+        //   5-1c[8:1] / 5-1[8:1]c  c 在轨迹上或时长之后 → 只作用于星星本体，星星头照常跟
+        //   两处都写 → 两个都不跟
         if (noteText.Contains('c'))
         {
             simaiNote.canSVAffect = false;
+            simaiNote.canSVAffectHead = false;
+
+            if (simaiNote.noteType == SimaiNoteType.Slide)
+            {
+                // 第一个轨迹符号的位置：它之前算"星星头"，之后算"星星本体"
+                var markPos = -1;
+                for (var i = 0; i < noteText.Length; i++)
+                {
+                    if ("-^v<>Vpqszw".IndexOf(noteText[i]) >= 0)
+                    {
+                        markPos = i;
+                        break;
+                    }
+                }
+
+                var headC = false;
+                var bodyC = false;
+                for (var i = 0; i < noteText.Length; i++)
+                {
+                    if (noteText[i] != 'c') continue;
+                    if (markPos >= 0 && i < markPos) headC = true;
+                    else bodyC = true;
+                }
+
+                // 只写了其中一处时，另一处保持"受 SV 影响"
+                if (headC && !bodyC) simaiNote.canSVAffect = true;
+                if (bodyC && !headC) simaiNote.canSVAffectHead = true;
+            }
+            else
+            {
+                // 非星星：c 就是音符自己，头尾不区分
+                simaiNote.canSVAffectHead = false;
+            }
+
             noteText = noteText.Replace("c", "");
         }
 
@@ -1100,6 +1314,15 @@ internal class SimaiNote
     public bool isSlideMine;
     public bool isSlideNoHead;
     public bool canSVAffect = true;
+    // 星星头单独一份：c 写在轨迹符号之前只影响头（5c-1），写在后面只影响滑条（5-1c）。
+    // 非星星音符没有"头"的概念，两个字段总是一致。
+    public bool canSVAffectHead = true;
+
+    // 宽音符（只有 Tap / Break 有）：5>3 表示从 5 沿某个方向铺到 3。
+    // 方向由起点所在半圈和尖括号决定：7812 的 > 是顺时针、< 是逆时针；3456 反过来。
+    public bool isWide;
+    public int wideEndPosition; // 另一端键位 1-8
+    public bool isWideClockwise; // 覆盖方向：true = 顺时针（键位 +1），false = 逆时针（键位 -1）
 
     public string? noteContent; //used for star explain
     public SimaiNoteType noteType;

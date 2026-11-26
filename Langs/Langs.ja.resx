@@ -482,6 +482,12 @@ Open Browser to download latest update of Majdata?</value>
     <value>It seems that Majdata was not closed properly last time. Do you want to open the auto-save recovery window?</value>
     <comment>Translation required</comment>
   </data>
+  <data name="WideNoteHollow" xml:space="preserve">
+    <value>ワイドノートを中抜き</value>
+  </data>
+  <data name="WideNoteHollowTooltip" xml:space="preserve">
+    <value>Translation required</value>
+  </data>
   <data name="EnableSmoothSlideAnime" xml:space="preserve">
     <value>Smooth slide animation</value>
     <comment>Translation required</comment>

@@ -56,8 +56,8 @@
         <Image x:Name="MusicWave" Height="74" VerticalAlignment="Bottom" MouseWheel="MusicWave_MouseWheel"
                PreviewMouseLeftButtonDown="MusicWave_PreviewMouseLeftButtonDown" MouseMove="MusicWave_MouseMove"
                Grid.ColumnSpan="7" SizeChanged="MusicWave_SizeChanged" Grid.RowSpan="2" Grid.Row="1" Margin="0,0,1,0" />
-        <Line StrokeThickness="3" Y2="56" Height="74" VerticalAlignment="Bottom" Stroke="Red" Y1="15"
-              HorizontalAlignment="Left" Width="45" Grid.ColumnSpan="2" Margin="276,0,0,0" Grid.RowSpan="2" Grid.Row="1" Grid.Column="5" />
+        <!--播放头原先是一条 Margin 写死的 Line，位图宽度和控件宽度有偏差时会和波形里的三角错开，
+            现在改由 DrawWave 直接画进位图（和三角、音符共用一套坐标）。-->
 
         <Menu Height="19" VerticalAlignment="Top" Background="{DynamicResource ButtonsBackground}"
               Foreground="{DynamicResource ButtonForeground}" Grid.ColumnSpan="7" Grid.RowSpan="2" Margin="0,0,1,0">

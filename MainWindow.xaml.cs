@@ -745,9 +745,16 @@ public partial class MainWindow : Window
         var rawText = GetRawFumenText();
         double time;
         if (needSeek || SimaiProcess.HasFreshParse(rawText))
+        {
             time = SimaiProcess.Serialize(rawText, GetRawFumenPosition());
+        }
         else
-            time = ghostCusorPositionTime;
+        {
+            // 文本刚改过、完整解析还没跟上。等 ChartRefreshDelay（默认 120ms）太难受，
+            // 这里用只算逗号表的轻量路径当场算，输入时三角才能实时跟手。
+            SimaiProcess.BuildCommaTableFast(rawText);
+            time = SimaiProcess.TimeAtPosition(GetRawFumenPosition());
+        }
 
         if (needSeek)
         {
@@ -764,11 +771,16 @@ public partial class MainWindow : Window
 
     private void FumenContent_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (GetRawFumenText() == "" || isLoading) return;
+        var rawText = GetRawFumenText();
+        if (rawText == "" || isLoading) return;
         SetSavedState(false);
-        if (chartChangeTimer.Interval < 33)
+        // 延迟解析是为了"十几万字符的谱面一次解析 20~30ms、连按会卡"。
+        // 小谱面根本没这个负担，还按 120ms 延迟拖着，下边栏的音符位置会慢一拍，手感很差。
+        // 所以只有超出快解阈值、并且用户确实把延迟调大了，才走定时器。
+        if (chartChangeTimer.Interval < 33 || rawText.Length <= FastParseCharLimit)
         {
-            SimaiProcess.Serialize(GetRawFumenText(), GetRawFumenPosition());
+            chartChangeTimer.Stop();
+            ghostCusorPositionTime = (float)SimaiProcess.Serialize(rawText, GetRawFumenPosition());
             DrawWave();
         }
         else

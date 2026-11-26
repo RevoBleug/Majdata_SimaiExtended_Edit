@@ -439,8 +439,37 @@ namespace MajdataEdit.SyntaxModule
         /// 检查Note语句合法性，不检查BPM，拍号与变速语句
         /// </summary>
         /// <param name="noteStr"></param>
+        /// <summary>
+        ///     摘掉 [时长] 之外的 c（表示不跟 SV）。它不参与路径结构，
+        ///     留着会让 header 被当成非法类型、或让"结尾必须是 ] 或 b"的检查失败。
+        /// </summary>
+        static string StripSVFlag(string s)
+        {
+            var sb = new System.Text.StringBuilder(s.Length);
+            var depth = 0;
+            foreach (var ch in s)
+            {
+                if (ch == '[') depth++;
+                else if (ch == ']' && depth > 0) depth--;
+
+                if (ch == 'c' && depth == 0) continue;
+                sb.Append(ch);
+            }
+
+            return sb.ToString();
+        }
+
         static bool NoteSyntaxCheck(string noteStr,int posX,int posY)
         {
+            // c（不跟 SV）位置自由：5c-1 / 5-1c / 5-1[8:1]c 都合法，
+            // 但它会混进 header 与尾部后缀的判断，所以先摘掉再查结构。
+            noteStr = StripSVFlag(noteStr);
+
+            // 宽音符：5>3 / 5<3 / 5b>3 / 5>3b。含尖括号但不是 slide（slide 必须带 [时长]）
+            if (SimaiProcess.TryParseWideNote(noteStr, out var wideStart, out var wideEnd, out _)
+                && wideStart >= 1 && wideStart <= 8 && wideEnd >= 1 && wideEnd <= 8)
+                return true;
+
             if (IsTap(noteStr))
                 return true;
             else if (IsHold(noteStr))

@@ -454,6 +454,12 @@ Click OK to start render.</value>
   <data name="AbnormalTerminationInformation" xml:space="preserve">
     <value>It seems that Majdata was not closed properly last time. Do you want to open the auto-save recovery window?</value>
   </data>
+  <data name="WideNoteHollow" xml:space="preserve">
+    <value>Hollow wide notes</value>
+  </data>
+  <data name="WideNoteHollowTooltip" xml:space="preserve">
+    <value>When off, wide notes are drawn as filled bands. Takes effect on the next playback.</value>
+  </data>
   <data name="EnableSmoothSlideAnime" xml:space="preserve">
     <value>Smooth slide animation</value>
   </data>

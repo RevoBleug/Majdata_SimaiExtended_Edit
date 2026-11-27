@@ -488,6 +488,12 @@ Open Browser to download latest update of Majdata?</value>
   <data name="WideNoteHollowTooltip" xml:space="preserve">
     <value>Translation required</value>
   </data>
+  <data name="WideBandAlpha" xml:space="preserve">
+    <value>ワイドホールド帯の不透明度</value>
+  </data>
+  <data name="WideBandAlphaTooltip" xml:space="preserve">
+    <value>ワイドホールド中央の半透明帯の濃さ（0.02～1、既定 0.35）。次回再生から反映されます。</value>
+  </data>
   <data name="EnableSmoothSlideAnime" xml:space="preserve">
     <value>Smooth slide animation</value>
     <comment>Translation required</comment>

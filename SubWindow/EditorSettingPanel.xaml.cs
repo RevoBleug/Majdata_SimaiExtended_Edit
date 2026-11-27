@@ -61,6 +61,7 @@ public partial class EditorSettingPanel : Window
         AutoUpdate.IsChecked = window.editorSetting.AutoCheckUpdate;
         SmoothSlideAnime.IsChecked = window.editorSetting.SmoothSlideAnime;
         WideNoteHollow.IsChecked = window.editorSetting.WideNoteHollow;
+        WideBandAlpha.Text = window.editorSetting.WideBandAlpha.ToString("F2");
         SyntaxCheckLevel.SelectedIndex = window.editorSetting.SyntaxCheckLevel;
     }
 
@@ -109,6 +110,9 @@ public partial class EditorSettingPanel : Window
         window.editorSetting!.AutoCheckUpdate = (bool) AutoUpdate.IsChecked!;
         window.editorSetting!.SmoothSlideAnime = (bool) SmoothSlideAnime.IsChecked!;
         window.editorSetting!.WideNoteHollow = (bool) WideNoteHollow.IsChecked!;
+        // 范围钳一下：0 等于完全不显示，1 会变成一块实色板
+        window.editorSetting!.WideBandAlpha =
+            Math.Clamp(float.Parse(WideBandAlpha.Text), 0.02f, 1f);
         window.editorSetting!.SyntaxCheckLevel = SyntaxCheckLevel.SelectedIndex;
         // window.editorSetting.isComboEnabled = (bool) ComboDisplay.IsChecked!;
         window.editorSetting!.comboStatusType = (EditorComboIndicator)Enum.GetValues(

@@ -460,6 +460,12 @@ Click OK to start render.</value>
   <data name="WideNoteHollowTooltip" xml:space="preserve">
     <value>When off, wide notes are drawn as filled bands. Takes effect on the next playback.</value>
   </data>
+  <data name="WideBandAlpha" xml:space="preserve">
+    <value>Wide hold band opacity</value>
+  </data>
+  <data name="WideBandAlphaTooltip" xml:space="preserve">
+    <value>Opacity of the translucent band inside a wide hold, 0.02-1, default 0.35. Takes effect on the next playback.</value>
+  </data>
   <data name="EnableSmoothSlideAnime" xml:space="preserve">
     <value>Smooth slide animation</value>
   </data>

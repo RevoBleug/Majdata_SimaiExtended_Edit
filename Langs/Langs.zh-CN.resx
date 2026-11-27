@@ -452,6 +452,12 @@
   <data name="WideNoteHollowTooltip" xml:space="preserve">
     <value>关闭后宽音符变成实心色块。改完需重新播放才生效。</value>
   </data>
+  <data name="WideBandAlpha" xml:space="preserve">
+    <value>宽音符色带透明度</value>
+  </data>
+  <data name="WideBandAlphaTooltip" xml:space="preserve">
+    <value>宽音符 hold 中间那条半透明色带的浓度，0.02~1，默认 0.35。改完需重新播放才生效。</value>
+  </data>
   <data name="EnableSmoothSlideAnime" xml:space="preserve">
     <value>平滑Slide动画</value>
   </data>

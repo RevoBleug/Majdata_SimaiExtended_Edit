@@ -256,6 +256,11 @@ public partial class MainWindow : Window
         if (soundSetting != null) soundSetting.Close();
         if (editorSetting == null) ReadEditorSetting();
 
+        // 换谱面之前先把上一张的 per-maidata 设置写回去。
+        // SaveSetting 原来只在"保存谱面"和"关程序"时调用，直接从菜单打开另一张谱面的话，
+        // 这一张的音量 / 难度 / 播放位置就丢了，下次再打开它读到的还是旧值。
+        if (maidataDir != "" && Path.GetFullPath(maidataDir) != Path.GetFullPath(path)) SaveSetting();
+
         var useOgg = File.Exists(path + "/track.ogg");
 
         var audioPath = path + "/track" + (useOgg ? ".ogg" : ".mp3");
@@ -486,6 +491,7 @@ public partial class MainWindow : Window
         var path = maidataDir + "/" + majSettingFilename;
         if (!File.Exists(path)) return;
         var setting = JsonConvert.DeserializeObject<MajSetting>(File.ReadAllText(path));
+        if (setting == null) return;   // 文件空的或坏的，别让下面 NRE
         LevelSelector.SelectedIndex = setting!.lastEditDiff;
         selectedDifficulty = setting.lastEditDiff;
         SetBgmPosition(setting.lastEditTime);
@@ -1535,6 +1541,7 @@ public partial class MainWindow : Window
             request.audioSpeed = GetPlaybackSpeed();
             request.smoothSlideAnime = editorSetting!.SmoothSlideAnime;
             request.wideNoteHollow = editorSetting!.WideNoteHollow;
+            request.wideBandAlpha = editorSetting!.WideBandAlpha;
             request.editorPlayMethod = editorSetting.editorPlayMethod;
         });
 

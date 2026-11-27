@@ -814,15 +814,47 @@ internal static class SimaiProcess
         startPos = 0;
         endPos = 0;
         clockwise = false;
+        if (string.IsNullOrEmpty(noteText)) return false;
 
-        if (noteText.IndexOf('[') >= 0) return false;
-
-        // b=break  x=EX  c=不跟 SV  m=mine，这几个后缀位置自由（5b>3 和 5>3b 都合法）
-        var buf = new StringBuilder(4);
-        for (var i = 0; i < noteText.Length; i++)
+        // 切掉时长（hold 的 [1:1]）。这里不看 h 的位置，下面用方向符来定位。
+        var core = noteText;
+        var bracket = core.IndexOf('[');
+        if (bracket >= 0)
         {
-            var ch = noteText[i];
-            if (ch == 'b' || ch == 'x' || ch == 'c' || ch == 'm') continue;
+            var close = core.LastIndexOf(']');
+            if (close < bracket) return false;
+            core = core.Substring(0, bracket);
+        }
+
+        // 键位段是"键位 + 方向符 + 键位"。方向符前面可以有 b/x/c/m 这类后缀，
+        // 所以先找到第一个 > 或 < 的位置，后面用它的下标来判断 h 合不合法。
+        var dirIdx = -1;
+        for (var i = 0; i < core.Length; i++)
+        {
+            if (core[i] == '>' || core[i] == '<')
+            {
+                dirIdx = i;
+                break;
+            }
+        }
+
+        if (dirIdx < 0) return false;
+
+        // h 只能出现在第二个键位之后：8<5h、8<5hbx、5>3h 都是宽 hold；
+        // 5h>3 这种 h 夹在两个键位中间的属于星星语法，不能当成宽音符吃掉。
+        var hIdx = core.IndexOf('h');
+        if (hIdx >= 0 && hIdx < dirIdx + 2) return false;
+
+        // 带 [时长] 却没有 h 的，是普通滑块（5>3[4:1] 表示星星从 5 顺时针到 3），
+        // 宽 tap 本身不带时长，不能把它吃成宽音符。
+        if (bracket >= 0 && hIdx < 0) return false;
+
+        // b=break  x=EX  c=不跟 SV  m=mine  h=hold，这些后缀位置自由，全部剥掉后必须正好剩三个字符
+        var buf = new StringBuilder(4);
+        for (var i = 0; i < core.Length; i++)
+        {
+            var ch = core[i];
+            if (ch == 'b' || ch == 'x' || ch == 'c' || ch == 'm' || ch == 'h') continue;
             buf.Append(ch);
         }
         if (buf.Length != 3) return false;
@@ -976,8 +1008,9 @@ internal class SimaiTimingPoint
             simaiNote.noteType = SimaiNoteType.Tap; //if nothing happen in following if
         }
 
-        // 宽音符：只有 Tap / Break。必须在 slide 判断之前定下来，
+        // 宽音符：Tap / Break / Hold。必须在 slide 判断之前定下来，
         // 否则 5>3 会被 isSlideNote 当成 slide（含 '>'），再去要 [时长] 而崩掉。
+        // noteType 这里先给 Tap，末尾带 h 的会在下面的 hold 分支改成 Hold。
         if (SimaiProcess.TryParseWideNote(noteText, out var wideStart, out var wideEnd, out var wideClockwise))
         {
             simaiNote.startPosition = wideStart;

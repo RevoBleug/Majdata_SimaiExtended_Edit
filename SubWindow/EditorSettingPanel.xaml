@@ -127,6 +127,9 @@
             <CheckBox x:Name="WideNoteHollow" VerticalAlignment="Center"
                       ToolTip="{lex:Loc Key=WideNoteHollowTooltip}" />
             <Label Content="{lex:Loc Key=WideNoteHollow}" />
+            <Label Content="{lex:Loc Key=WideBandAlpha}" Margin="18,0,4,0" />
+            <TextBox x:Name="WideBandAlpha" Width="46" VerticalAlignment="Center"
+                     ToolTip="{lex:Loc Key=WideBandAlphaTooltip}" />
         </StackPanel>
 
         <StackPanel Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" Margin="5,25,-5,8">

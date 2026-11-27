@@ -24,7 +24,8 @@ internal class EditRequestjson
     public float startTime;
     public float touchSpeed;
     public bool smoothSlideAnime;
-    public bool wideNoteHollow = true; // 宽音符空心/实心，默认空心
+    public bool wideNoteHollow = false; // 宽音符空心/实心，默认实心
+    public float wideBandAlpha = 0.35f; // 宽音符 hold 中间那条色带的透明度（0~1）
 }
 
 public enum EditorPlayMethod
@@ -119,6 +120,9 @@ public class EditorSetting
     public string SendViewerKey = "Ctrl+Shift+z";
     public float touchSpeed = 7.5f;
     public bool SmoothSlideAnime = false;
-    /// <summary>宽音符是否空心（胶囊轮廓）。true = 空心（默认），false = 实心填充带。</summary>
-    public bool WideNoteHollow = true;
+    /// <summary>宽音符是否空心（胶囊轮廓）。true = 空心，false = 实心填充带（默认）。</summary>
+    public bool WideNoteHollow = false;
+
+    /// <summary>宽音符 hold 中间那条色带的透明度，0~1。默认 0.35。改完需重新播放才生效。</summary>
+    public float WideBandAlpha = 0.35f;
 }
